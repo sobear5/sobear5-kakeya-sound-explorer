@@ -143,7 +143,7 @@ resolution; try `scale=0.5` on a slow GPU, `scale=2` for crisp snapshots on a hi
 
 - `index.html`: the whole app, with the geometry (`#kakeya-core`), synthesiser (`#synth-src`) and
   shaders inline, so the single file can be copied anywhere.
-- `tests/core.test.mjs`: run `node kakeya-sound-explorer/tests/core.test.mjs` (Node 18+, no
+- `tests/core.test.mjs`: run `node tests/core.test.mjs` (Node 18+, no
   dependencies). It reads the scripts out of `index.html` and checks:
   - the closed form against a literal, vertex-by-vertex run of the paper's bisection and expansion;
   - the pruned tree walk against brute force;
