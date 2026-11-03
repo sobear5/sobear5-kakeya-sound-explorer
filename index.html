@@ -1,0 +1,1955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kakeya Sound Explorer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  body {
+    font: 12px/1.45 "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #e9e9ec;
+  }
+  canvas { position: fixed; left: 0; top: 0; width: 100%; height: 100%; display: block; }
+  #gl { touch-action: none; cursor: crosshair; }
+  #overlay { pointer-events: none; }
+  .box {
+    position: fixed; background: rgba(8, 8, 12, 0.8); border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px; padding: 8px 10px; backdrop-filter: blur(2px);
+  }
+  #panel { top: 10px; left: 10px; width: 322px; }
+  #panel .title { font-weight: 600; letter-spacing: 0.02em; cursor: pointer; user-select: none; }
+  #panel .title .dim { font-weight: 400; }
+  #panel.collapsed .body { display: none; }
+  #panel label.line { display: flex; align-items: center; gap: 6px; margin: 5px 0; }
+  #panel label.line > span:first-child { width: 90px; flex: none; color: #b8b8c0; }
+  #panel select, #panel button {
+    font: inherit; color: inherit; background: #1b1b22; border: 1px solid #44444f;
+    border-radius: 4px; padding: 1px 4px;
+  }
+  #panel select { flex: 1; min-width: 0; }
+  #panel button { cursor: pointer; }
+  #panel input[type=range] { flex: 1; min-width: 0; accent-color: #e04040; }
+  #panel output { width: 34px; text-align: right; flex: none; }
+  #panel .row { display: flex; flex-wrap: wrap; gap: 0 12px; margin-top: 4px; }
+  #panel .row label { display: flex; align-items: center; gap: 3px; }
+  #legend { height: 7px; border-radius: 2px; margin: 6px 0 1px; }
+  #legendText { display: flex; justify-content: space-between; color: #9a9aa4; font-size: 10px; }
+  #hud { left: 10px; bottom: 10px; max-width: calc(100% - 42px); white-space: pre-wrap; }
+  #hud .k { color: #9a9aa4; }
+  #hud .warn { color: #ffb070; }
+  #helpHint { top: 10px; right: 10px; color: #b8b8c0; cursor: pointer; }
+  #help {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.78); display: none; overflow: auto;
+    padding: 28px 34px; font-size: 14px; line-height: 1.55; white-space: pre-wrap; z-index: 10;
+  }
+  #help.show { display: block; }
+  #help .dim { color: #a9a9b3; }
+  .noui .box { display: none !important; }
+  #fatal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+           padding: 40px; text-align: center; font-size: 15px; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="overlay"></canvas>
+
+<div id="panel" class="box">
+  <div class="title" id="panelTitle">Kakeya Sound Explorer <span class="dim">· click to hide</span></div>
+  <div class="body">
+    <label class="line"><span>Construction</span>
+      <select id="type">
+        <option value="0">1 · Perron–Schoenberg tree</option>
+        <option value="1">2 · Square: four trees</option>
+        <option value="2">3 · Kahane: Cantor sets</option>
+        <option value="3">4 · Triangle Δ, unslid</option>
+      </select>
+    </label>
+    <label class="line"><span id="depthLabel">p</span>
+      <input id="depth" type="range" min="2" max="20" step="1"><output id="depthOut"></output>
+    </label>
+    <label class="line"><span>Growth</span>
+      <input id="grow" type="range" min="0" max="1000" step="1"><button id="growBtn" title="Grow (G)">▶</button>
+    </label>
+    <label class="line"><span>Colour</span>
+      <select id="color">
+        <option value="0">Needle direction</option>
+        <option value="1">Needles per point</option>
+        <option value="2">Paper: every triangle</option>
+        <option value="3">Paper: outline</option>
+      </select>
+    </label>
+    <div id="legend"></div>
+    <div id="legendText"><span id="legendLo"></span><span id="legendMid"></span><span id="legendHi"></span></div>
+    <label class="line"><span>Sound</span>
+      <select id="sound">
+        <option value="orbit">Orbit (FSE-style)</option>
+        <option value="chord">Chord: pitch = direction</option>
+        <option value="off">Off</option>
+      </select>
+    </label>
+    <div class="row">
+      <label title="L"><input type="checkbox" id="levels"> levels</label>
+      <label title="T"><input type="checkbox" id="ghost"> Δ outline</label>
+      <label title="D"><input type="checkbox" id="damp"> dampening</label>
+      <label title="Q"><input type="checkbox" id="quant"> scale</label>
+    </div>
+  </div>
+</div>
+<div id="helpHint" class="box">H · help</div>
+<div id="hud" class="box"></div>
+<div id="help"></div>
+<div id="fatal"></div>
+
+<script id="kakeya-core">
+var KakeyaCore = (function () {
+  'use strict';
+
+  var TREE = 0, SQUARE = 1, KAHANE = 2, TRIANGLE = 3;
+
+  var TYPES = [
+    { id: TREE, key: 'tree', name: 'Perron–Schoenberg tree', depthName: 'p',
+      depthMin: 2, depthMax: 20, depthDefault: 10, growMin: 2 },
+    { id: SQUARE, key: 'square', name: 'Full square: four trees, all 360°', depthName: 'p',
+      depthMin: 2, depthMax: 18, depthDefault: 9, growMin: 2 },
+    { id: KAHANE, key: 'kahane', name: "Kahane's Cantor-set construction", depthName: 'm',
+      depthMin: 0, depthMax: 9, depthDefault: 5, growMin: 0 },
+    { id: TRIANGLE, key: 'triangle', name: 'Original triangle Δ, nothing slid', depthName: 'p',
+      depthMin: 2, depthMax: 20, depthDefault: 10, growMin: 2 }
+  ];
+
+  // ---------------------------------------------------------------------------------------------
+  // Perron–Schoenberg tree.
+  //
+  // Coordinates are "level units": the paper's x and y multiplied by p, so the level line y = k/p
+  // is u = k. In these units the stage-k figure Σ_k does not depend on p at all; p only says where
+  // to stop, and the final picture is scaled down by p.
+  //
+  // Unwinding the paper's bisection-and-expansion step (pp. 701-703) gives a closed form. Σ_k is the
+  // union of 2^(k-2) triangles indexed by binary strings d_0 d_1 ... d_(k-3) (d_j says which half
+  // was kept at the j-th bisection). The slice of triangle d at height u is the interval
+  //     [ u - 2 + sum_j d_j w_j(u),  that + len(u) ],
+  //     w_j(u) = 2^-j (j + 1 - u),   len(u) = 2^(3-k) (k - u).
+  // So every slice is a union of intervals placed at subset sums of the weights w_j(u), the same
+  // shape of formula as a Cantor set. The weight w_j vanishes on level line u = j + 1: on that line
+  // the triangles that differ only in digit j lie exactly on top of each other, which is where
+  // the area is saved.
+  //
+  // A fractional stage G between k and k + 1 is Σ_k with every triangle bisected and its two halves
+  // part-way through their expansion. Only the last digit's weight and the slice length change, so
+  // the picture grows continuously from Σ_2 to Σ_p.
+  // ---------------------------------------------------------------------------------------------
+
+  function treeStage(G) {
+    G = Math.max(2, G);
+    var D = Math.max(0, Math.ceil(G - 1e-9) - 2);
+    return { G: G, D: D, sigma: G - (D + 1) };
+  }
+
+  function treeWeight(st, j, u) {
+    return j < st.D - 1
+      ? Math.pow(2, -j) * (j + 1 - u)
+      : Math.pow(2, 1 - st.D) * (st.D + 1 - st.sigma - u);
+  }
+
+  function treeLen(st, u) {
+    return Math.pow(2, 1 - st.D) * (st.G - u);
+  }
+
+  // Base, apex and left-edge slope of triangle number idx (numbered left to right, which is also
+  // the order of their directions). The left edge is x = x0 + slope * u.
+  function treeTriangle(st, idx) {
+    var D = st.D, x0 = -2, slope = 1;
+    for (var j = 0; j < D; j++) {
+      if (Math.floor(idx / Math.pow(2, D - 1 - j)) % 2) {
+        x0 += j < D - 1 ? Math.pow(2, -j) * (j + 1) : Math.pow(2, 1 - D) * (D + 1 - st.sigma);
+        slope -= Math.pow(2, -j);
+      }
+    }
+    var base = Math.pow(2, 1 - D) * st.G;
+    return { x0: x0, x1: x0 + base, apex: x0 + slope * st.G, top: st.G, slope: slope };
+  }
+
+  // Calls visit(idx, r, len) for every triangle whose slice at height u comes within tol of X,
+  // where r = X - (left end of that slice). Returns how many triangles contain (X, u).
+  function treeQuery(st, X, u, tol, visit) {
+    if (!(u >= 0 && u <= st.G)) return 0;
+    var D = st.D, w = new Float64Array(D), lo = new Float64Array(D + 1), hi = new Float64Array(D + 1);
+    for (var j = 0; j < D; j++) w[j] = treeWeight(st, j, u);
+    var len = treeLen(st, u);
+    lo[D] = 0;
+    hi[D] = len;
+    for (j = D - 1; j >= 0; j--) {
+      lo[j] = lo[j + 1] + Math.min(w[j], 0);
+      hi[j] = hi[j + 1] + Math.max(w[j], 0);
+    }
+    var count = 0;
+    (function walk(j, r, idx) {
+      if (r < lo[j] - tol || r > hi[j] + tol) return;
+      if (j === D) {
+        if (r >= 0 && r <= len) count++;
+        if (visit) visit(idx, r, len);
+        return;
+      }
+      walk(j + 1, r, idx * 2);
+      walk(j + 1, r - w[j], idx * 2 + 1);
+    })(0, X - (u - 2), 0);
+    return count;
+  }
+
+  // Fast counter with preallocated scratch space, for area estimates and the cursor readout.
+  // With firstOnly it stops at the first triangle found.
+  function treeCounter(st) {
+    var D = st.D;
+    var w = new Float64Array(D), lo = new Float64Array(D + 1), hi = new Float64Array(D + 1);
+    var res = new Float64Array(D + 1), nxt = new Int8Array(D + 1);
+    return function (X, u, firstOnly) {
+      if (!(u >= 0 && u <= st.G)) return 0;
+      var j;
+      for (j = 0; j < D; j++) w[j] = treeWeight(st, j, u);
+      lo[D] = 0;
+      hi[D] = treeLen(st, u);
+      for (j = D - 1; j >= 0; j--) {
+        lo[j] = lo[j + 1] + (w[j] < 0 ? w[j] : 0);
+        hi[j] = hi[j + 1] + (w[j] > 0 ? w[j] : 0);
+      }
+      var r0 = X - (u - 2);
+      if (r0 < lo[0] || r0 > hi[0]) return 0;
+      var n = 0;
+      j = 0;
+      res[0] = r0;
+      nxt[0] = 0;
+      while (j >= 0) {
+        if (j === D) {
+          n++;
+          if (firstOnly) return 1;
+          j--;
+          continue;
+        }
+        var c = nxt[j];
+        if (c > 1) {
+          j--;
+          continue;
+        }
+        nxt[j] = c + 1;
+        var r = c ? res[j] - w[j] : res[j];
+        if (r >= lo[j + 1] && r <= hi[j + 1]) {
+          res[j + 1] = r;
+          nxt[j + 1] = 0;
+          j++;
+        }
+      }
+      return n;
+    };
+  }
+
+  // b[0..2n) = sorted union of a[0..n) and a[0..n) + w. a must be sorted; w may have either sign.
+  function mergeShift(a, n, w, b) {
+    var i = 0, k = 0, o = 0;
+    while (i < n && k < n) {
+      var x = a[i], y = a[k] + w;
+      if (x <= y) { b[o++] = x; i++; } else { b[o++] = y; k++; }
+    }
+    while (i < n) b[o++] = a[i++];
+    while (k < n) b[o++] = a[k++] + w;
+  }
+
+  // Total length of the union of the intervals [a[i], a[i] + len], a sorted.
+  function unionLength(a, n, len) {
+    var total = 0, end = -Infinity;
+    for (var i = 0; i < n; i++) {
+      var s = a[i], e = s + len;
+      if (s >= end) { total += len; end = e; } else if (e > end) { total += e - end; end = e; }
+    }
+    return total;
+  }
+
+  // Exact length of the slice of the tree at height u. bufA and bufB need room for 2^D numbers.
+  function treeSlice(st, u, bufA, bufB) {
+    var len = treeLen(st, u);
+    if (!(u >= 0 && len > 0)) return 0;
+    var a = bufA, b = bufB, n = 1, t;
+    a[0] = u - 2;
+    for (var j = 0; j < st.D; j++) {
+      mergeShift(a, n, treeWeight(st, j, u), b);
+      t = a; a = b; b = t;
+      n *= 2;
+    }
+    return unionLength(a, n, len);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Kahane's construction: all segments from (c, 0) to (d/2, 1) with c and d in the middle-half
+  // Cantor set C (keep [0, 1/4] and [3/4, 1], repeat). The slice at height t is (1-t)C + (t/2)C, a
+  // projection of the four-corner Cantor set C x C, which has length zero for almost every t, and
+  // the horizontal runs d/2 - c fill the whole interval [-1, 1/2], so every direction in that range
+  // occurs. Depth G: floor(G) full levels of C, then one level part-way through having its middle
+  // removed, so the picture changes continuously.
+  // ---------------------------------------------------------------------------------------------
+
+  function kahaneStage(G) {
+    G = Math.max(0, G);
+    var D = Math.ceil(G - 1e-9);
+    var rLast = D === 0 ? 0.5 : 0.5 - 0.25 * Math.min(1, Math.max(0, G - (D - 1)));
+    var step = [], ell = [1];
+    for (var i = 1; i <= D; i++) {
+      var ratio = i === D ? rLast : 0.25;
+      step.push((1 - ratio) * ell[i - 1]);
+      ell.push(ratio * ell[i - 1]);
+    }
+    return { G: G, D: D, step: step, ell: ell };
+  }
+
+  // Calls visit(c0, d0, r, span) for every trapezoid conv(I x {0}, (J/2) x {1}) whose slice comes
+  // within tol of x; c0 and d0 are the left ends of I and J, r = x - (left end of the slice).
+  // Returns how many trapezoids contain (x, t).
+  function kahaneQuery(st, x, t, tol, visit) {
+    if (!(t >= 0 && t <= 1)) return 0;
+    var a = 1 - t, b = t / 2, ab = a + b, D = st.D, count = 0;
+    (function walk(i, r, c0, d0) {
+      if (r < -tol || r > st.ell[i] * ab + tol) return;
+      if (i === D) {
+        var span = st.ell[D] * ab;
+        if (r >= 0 && r <= span) count++;
+        if (visit) visit(c0, d0, r, span);
+        return;
+      }
+      var s = st.step[i];
+      walk(i + 1, r, c0, d0);
+      walk(i + 1, r - a * s, c0 + s, d0);
+      walk(i + 1, r - b * s, c0, d0 + s);
+      walk(i + 1, r - ab * s, c0 + s, d0 + s);
+    })(0, x, 0, 0);
+    return count;
+  }
+
+  function kahaneCounter(st) {
+    var D = st.D, res = new Float64Array(D + 1), nxt = new Int8Array(D + 1);
+    return function (x, t, firstOnly) {
+      if (!(t >= 0 && t <= 1)) return 0;
+      var a = 1 - t, b = t / 2, ab = a + b;
+      if (x < 0 || x > ab) return 0;
+      var n = 0, j = 0;
+      res[0] = x;
+      nxt[0] = 0;
+      while (j >= 0) {
+        if (j === D) {
+          n++;
+          if (firstOnly) return 1;
+          j--;
+          continue;
+        }
+        var c = nxt[j];
+        if (c > 3) {
+          j--;
+          continue;
+        }
+        nxt[j] = c + 1;
+        var r = res[j] - ((c & 1) * a + (c >> 1) * b) * st.step[j];
+        if (r >= 0 && r <= st.ell[j + 1] * ab) {
+          res[j + 1] = r;
+          nxt[j + 1] = 0;
+          j++;
+        }
+      }
+      return n;
+    };
+  }
+
+  // Exact length of the slice at height t. bufA and bufB need room for 4^D numbers.
+  function kahaneSlice(st, t, bufA, bufB) {
+    var a = 1 - t, b = t / 2, len = st.ell[st.D] * (a + b);
+    var arr = bufA, tmp = bufB, n = 1, sw;
+    arr[0] = 0;
+    for (var i = 0; i < st.D; i++) {
+      mergeShift(arr, n, a * st.step[i], tmp); sw = arr; arr = tmp; tmp = sw; n *= 2;
+      mergeShift(arr, n, b * st.step[i], tmp); sw = arr; arr = tmp; tmp = sw; n *= 2;
+    }
+    return unionLength(arr, n, len);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // The square: four trees, one standing on each side of the square [-1, 1] x [0, 2] and leaning in
+  // towards its centre (0, 1), as in Fig. 4 of the paper. Tree r is tree 0 turned r quarter turns
+  // anticlockwise about the centre.
+  // ---------------------------------------------------------------------------------------------
+
+  function quarterTurns(x, y, r) {
+    var dx = x, dy = y - 1, t, k = ((r % 4) + 4) % 4;
+    for (var i = 0; i < k; i++) { t = dx; dx = -dy; dy = t; }
+    return [dx, dy + 1];
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Models: one object per (type, depth, stage) with membership, the needles through a point, and
+  // an area estimate, all in the paper's units.
+  // ---------------------------------------------------------------------------------------------
+
+  function bitReversed(n) {
+    var bits = Math.round(Math.log2(n)), out = new Array(n);
+    for (var i = 0; i < n; i++) {
+      var r = 0;
+      for (var b = 0; b < bits; b++) if (i & (1 << b)) r |= 1 << (bits - 1 - b);
+      out[i] = r;
+    }
+    return out;
+  }
+
+  // Integrates exact slice lengths over heights in bit-reversed order, so a partial sum is already
+  // a fair estimate of the whole.
+  function sliceAreaJob(slice, height, scale, nh) {
+    var order = bitReversed(nh), done = 0, sum = 0;
+    return {
+      exact: true,
+      step: function () {
+        if (done < nh) sum += slice((order[done++] + 0.5) * height / nh);
+        return done >= nh;
+      },
+      done: function () { return done >= nh; },
+      value: function () { return done ? sum / done * height * scale : NaN; },
+      error: function () { return 0; },
+      progress: function () { return done / nh; }
+    };
+  }
+
+  function mulberry32(seed) {
+    return function () {
+      seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+      var t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
+  // Stratified Monte Carlo over a box: one random point per cell, rows in bit-reversed order.
+  function monteCarloJob(contains, x0, y0, x1, y1, n) {
+    var rows = bitReversed(n), rng = mulberry32(12345), i = 0, hits = 0, N = n * n;
+    var cw = (x1 - x0) / n, ch = (y1 - y0) / n, boxArea = (x1 - x0) * (y1 - y0);
+    return {
+      exact: false,
+      step: function () {
+        var end = Math.min(N, i + 4096);
+        for (; i < end; i++) {
+          var row = rows[(i / n) | 0], col = i % n;
+          if (contains(x0 + (col + rng()) * cw, y0 + (row + rng()) * ch)) hits++;
+        }
+        return i >= N;
+      },
+      done: function () { return i >= N; },
+      value: function () { return i ? hits / i * boxArea : NaN; },
+      error: function () { var f = i ? hits / i : 0; return i ? Math.sqrt(f * (1 - f) / i) * boxArea : NaN; },
+      progress: function () { return i / N; }
+    };
+  }
+
+  function model(type, depth, G) {
+    var info = TYPES[type];
+    G = Math.min(depth, Math.max(info.growMin, G));
+
+    if (type === TREE || type === SQUARE) {
+      var p = depth, st = treeStage(G), counter = treeCounter(st), N = Math.pow(2, st.D);
+      var sides = type === TREE ? [0] : [0, 1, 2, 3];
+      var treeNeedles = function (x, y, r, out, max) {
+        var local = quarterTurns(x, y, -r);
+        treeQuery(st, local[0] * p, local[1] * p, 0, function (idx, rr, len) {
+          if (rr < 0 || rr > len || out.length >= max) return;
+          var tri = treeTriangle(st, idx), f = len > 0 ? rr / len : 0.5;
+          var F = (idx + f) / N;
+          var top = quarterTurns(tri.apex / p, st.G / p, r);
+          var bot = quarterTurns((tri.x0 + f * (tri.x1 - tri.x0)) / p, 0, r);
+          out.push({
+            ax: top[0], ay: top[1], bx: bot[0], by: bot[1],
+            u: type === TREE ? F : (0.625 + 0.25 * (F + r)) % 1,
+            key: r * N + idx
+          });
+        });
+      };
+      return {
+        type: type, depth: depth, G: G, stage: st, pieces: sides.length * N,
+        count: function (x, y) {
+          var n = 0;
+          for (var i = 0; i < sides.length; i++) {
+            var l = quarterTurns(x, y, -sides[i]);
+            n += counter(l[0] * p, l[1] * p, false);
+          }
+          return n;
+        },
+        contains: function (x, y) {
+          for (var i = 0; i < sides.length; i++) {
+            var l = quarterTurns(x, y, -sides[i]);
+            if (counter(l[0] * p, l[1] * p, true)) return true;
+          }
+          return false;
+        },
+        needles: function (x, y, max) {
+          var out = [];
+          for (var i = 0; i < sides.length; i++) treeNeedles(x, y, sides[i], out, max || 4096);
+          return out;
+        },
+        areaJob: function () {
+          if (type === TREE && st.D <= 18) {
+            var A = new Float64Array(N), B = new Float64Array(N);
+            var nh = st.D <= 10 ? 1024 : st.D <= 14 ? 512 : 256;
+            return sliceAreaJob(function (u) { return treeSlice(st, u, A, B); }, st.G, 1 / (p * p), nh);
+          }
+          var self = this;
+          return type === TREE
+            ? monteCarloJob(function (x, y) { return self.contains(x, y); }, -1, 0, 1, st.G / p, 512)
+            : monteCarloJob(function (x, y) { return self.contains(x, y); }, -1, 0, 1, 2, 512);
+        }
+      };
+    }
+
+    if (type === KAHANE) {
+      var ks = kahaneStage(G), kc = kahaneCounter(ks), M = ks.D;
+      return {
+        type: type, depth: depth, G: G, stage: ks, pieces: Math.pow(4, M),
+        count: function (x, y) { return kc(x, y, false); },
+        contains: function (x, y) { return kc(x, y, true) > 0; },
+        needles: function (x, y, max) {
+          var out = [], e = ks.ell[M];
+          max = max || 4096;
+          kahaneQuery(ks, x, y, 0, function (c0, d0, r, span) {
+            if (r < 0 || r > span || out.length >= max) return;
+            var f = span > 0 ? r / span : 0.5, c = c0 + f * e, d = d0 + f * e;
+            out.push({ ax: d / 2, ay: 1, bx: c, by: 0, u: (d / 2 - c + 1) / 1.5,
+                       key: Math.round(c0 * 1e9) * 7 + Math.round(d0 * 1e9) });
+          });
+          return out;
+        },
+        areaJob: function () {
+          var n = Math.pow(4, M), A = new Float64Array(n), B = new Float64Array(n);
+          var nh = M <= 5 ? 1024 : M <= 7 ? 512 : 256;
+          return sliceAreaJob(function (t) { return kahaneSlice(ks, t, A, B); }, 1, 1, nh);
+        }
+      };
+    }
+
+    // The original triangle Δ_G: apex (0, G/p), base [-G/p, G/p], nothing translated.
+    var h = G / depth, Dt = Math.max(0, Math.ceil(G - 1e-9) - 2);
+    var inTri = function (x, y) { return y >= 0 && y <= h && Math.abs(x) <= h - y; };
+    return {
+      type: type, depth: depth, G: G, pieces: Math.pow(2, Dt),
+      count: function (x, y) { return inTri(x, y) ? 1 : 0; },
+      contains: inTri,
+      needles: function (x, y) {
+        if (!inTri(x, y)) return [];
+        var bx = y < h ? x * h / (h - y) : 0;
+        return [{ ax: 0, ay: h, bx: bx, by: 0, u: (bx / h + 1) / 2, key: 0 }];
+      },
+      areaJob: function () {
+        var v = h * h;
+        return { exact: true, step: function () { return true; }, done: function () { return true; },
+                 value: function () { return v; }, error: function () { return 0; },
+                 progress: function () { return 1; } };
+      }
+    };
+  }
+
+  return {
+    TREE: TREE, SQUARE: SQUARE, KAHANE: KAHANE, TRIANGLE: TRIANGLE, TYPES: TYPES,
+    treeStage: treeStage, treeWeight: treeWeight, treeLen: treeLen, treeTriangle: treeTriangle,
+    treeQuery: treeQuery, treeCounter: treeCounter, treeSlice: treeSlice,
+    kahaneStage: kahaneStage, kahaneQuery: kahaneQuery, kahaneCounter: kahaneCounter,
+    kahaneSlice: kahaneSlice, quarterTurns: quarterTurns, model: model,
+    mergeShift: mergeShift, unionLength: unionLength
+  };
+})();
+if (typeof module !== 'undefined') module.exports = KakeyaCore;
+</script>
+
+<script id="synth-src" type="text/plain">
+// Kakeya Sound Explorer synthesiser. It runs inside an AudioWorklet, or on the main thread through a
+// ScriptProcessorNode when worklets are unavailable.
+//
+// The 'orbit' voice follows Synth::onGetData in HackerPoet's Fractal Sound Explorer: one orbit
+// point per step, cosine interpolation between successive points, x on the left channel and y on
+// the right, volume 8000/32768, and with dampening the volume shrinks by 0.9992 every 1/4000 s.
+// Here the orbit is the list of needle directions through the clicked point, as points on the unit
+// circle, so a point crossed by m needles gives a cycle of 2m steps.
+//
+// The 'chord' voice is additive: one partial per needle, pitch from its direction.
+class KakeyaSynthCore {
+  constructor(sampleRate) {
+    this.sr = sampleRate;
+    this.mode = 'off';
+    this.gain = 8000 / 32768;
+    this.volume = 0;
+    this.level = 0;
+    this.smooth = 1 - Math.exp(-1 / (0.003 * sampleRate));
+    this.damp = false;
+    this.dampPerSample = Math.pow(0.9992, 4000 / sampleRate);
+    this.pts = new Float32Array(2);
+    this.empty = false;
+    this.n = 0;
+    this.k = 0;
+    this.j = 0;
+    this.steps = 27;
+    this.dx = 0; this.dy = 0; this.dpx = 0; this.dpy = 0; this.wx = 0; this.wy = 0;
+    this.voices = [];
+    this.voiceSmooth = 1 - Math.exp(-1 / (0.012 * sampleRate));
+    const N = 2048, tab = new Float32Array(N + 1);
+    let peak = 0;
+    for (let i = 0; i <= N; i++) {
+      const ph = 2 * Math.PI * i / N;
+      tab[i] = Math.sin(ph) + 0.28 * Math.sin(2 * ph) + 0.1 * Math.sin(3 * ph);
+      peak = Math.max(peak, Math.abs(tab[i]));
+    }
+    for (let i = 0; i <= N; i++) tab[i] /= peak;
+    this.tab = tab;
+    this.tabN = N;
+  }
+
+  handle(msg) {
+    if (msg.cmd === 'orbit') {
+      const n = msg.pts.length >> 1;
+      if (!n) {
+        // No needle through the point: silence, like an orbit that escapes. If the point comes
+        // back inside the set without a new click (the tree growing under a held point), resume.
+        this.volume = 0;
+        this.empty = true;
+        return;
+      }
+      this.steps = Math.max(1, Math.round(this.sr / msg.stepRate));
+      if (this.empty && !msg.reset) this.volume = 1;
+      this.empty = false;
+      if (msg.reset || this.mode !== 'orbit') {
+        // Start from wherever the output is now, so the first step glides instead of clicking.
+        this.k = 0;
+        this.j = 0;
+        this.dx = this.wx;
+        this.dy = this.wy;
+        this.volume = 1;
+      } else {
+        this.k %= n;
+      }
+      this.pts = Float32Array.from(msg.pts);
+      this.n = n;
+      this.mode = 'orbit';
+    } else if (msg.cmd === 'chord') {
+      const list = msg.voices, target = list.length ? 1 / Math.sqrt(list.length) : 0;
+      const byKey = new Map();
+      for (const v of this.voices) { v.target = 0; byKey.set(v.key, v); }
+      for (const e of list) {
+        let v = byKey.get(e.key);
+        if (!v) {
+          v = { key: e.key, phase: Math.random(), amp: 0, inc: 0, gl: 0, gr: 0, target: 0 };
+          this.voices.push(v);
+          byKey.set(e.key, v);
+        }
+        v.inc = e.freq / this.sr;
+        const a = (Math.max(-1, Math.min(1, e.pan)) + 1) * Math.PI / 4;
+        v.gl = Math.cos(a);
+        v.gr = Math.sin(a);
+        v.target = target;
+      }
+      if (msg.reset || this.mode !== 'chord') this.volume = list.length ? 1 : 0;
+      this.mode = 'chord';
+    } else if (msg.cmd === 'stop') {
+      this.volume = 0;
+      this.empty = false;
+    } else if (msg.cmd === 'config') {
+      if ('damp' in msg) this.damp = !!msg.damp;
+    }
+  }
+
+  process(L, R, len) {
+    const tab = this.tab, N = this.tabN;
+    for (let i = 0; i < len; i++) {
+      this.level += (this.volume - this.level) * this.smooth;
+      let l = 0, r = 0;
+      if (this.mode === 'orbit' && this.n) {
+        if (this.j === 0) {
+          this.dpx = this.dx;
+          this.dpy = this.dy;
+          this.dx = this.pts[2 * this.k];
+          this.dy = this.pts[2 * this.k + 1];
+          this.k = (this.k + 1) % this.n;
+        }
+        const t = 0.5 - 0.5 * Math.cos(Math.PI * this.j / this.steps);
+        this.wx = t * this.dx + (1 - t) * this.dpx;
+        this.wy = t * this.dy + (1 - t) * this.dpy;
+        if (++this.j >= this.steps) this.j = 0;
+        l = this.wx;
+        r = this.wy;
+      } else if (this.mode === 'chord') {
+        for (let vi = 0; vi < this.voices.length; vi++) {
+          const v = this.voices[vi];
+          v.amp += (v.target - v.amp) * this.voiceSmooth;
+          v.phase += v.inc;
+          if (v.phase >= 1) v.phase -= 1;
+          const x = v.phase * N, xi = x | 0, s = tab[xi] + (tab[xi + 1] - tab[xi]) * (x - xi);
+          l += s * v.amp * v.gl;
+          r += s * v.amp * v.gr;
+        }
+        l *= 1.4;
+        r *= 1.4;
+      }
+      if (this.damp) this.volume *= this.dampPerSample;
+      const g = this.gain * this.level;
+      L[i] = Math.tanh(l * g);
+      R[i] = Math.tanh(r * g);
+    }
+    if (this.mode === 'chord' && this.voices.length) {
+      this.voices = this.voices.filter(v => v.target > 0 || v.amp > 1e-4);
+    }
+  }
+}
+
+if (typeof registerProcessor === 'function') {
+  registerProcessor('kakeya-synth', class extends AudioWorkletProcessor {
+    constructor() {
+      super();
+      this.core = new KakeyaSynthCore(sampleRate);
+      this.port.onmessage = e => this.core.handle(e.data);
+    }
+    process(inputs, outputs) {
+      const out = outputs[0];
+      this.core.process(out[0], out[1] || out[0], out[0].length);
+      return true;
+    }
+  });
+}
+</script>
+
+<script id="vert-src" type="x-shader/x-vertex">#version 300 es
+// One triangle that covers the whole viewport.
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+</script>
+
+<script id="frag-src" type="x-shader/x-fragment">#version 300 es
+// Kakeya Sound Explorer: fragment shader.
+//
+// Laid out like frag.glsl in HackerPoet's Fractal Sound Explorer (MIT licence): one function per
+// construction, evaluated once per pixel, and successive frames blended with alpha 1/(iTime + 1) at
+// a new sub-pixel offset, so the picture sharpens while the view holds still. The fractal shader
+// iterates z -> f(z, c) and stops when the orbit escapes. Here the loop walks the binary tree of
+// triangles instead, and drops a branch as soon as no triangle below it can reach the pixel. That
+// pruning test plays the part of the escape test.
+precision highp float;
+precision highp int;
+
+#define PI 3.14159265358979
+#define MAX_DIGITS 22
+#define KAHANE_MAX 10
+#define MAX_STEPS 16384
+
+#define TYPE_TREE 0
+#define TYPE_SQUARE 1
+#define TYPE_KAHANE 2
+#define TYPE_TRIANGLE 3
+
+#define COLOR_DIRECTION 0
+#define COLOR_MULTIPLICITY 1
+#define COLOR_PAPER 2
+#define COLOR_OUTLINE 3
+
+uniform vec2 iResolution;  // size of the render target in pixels
+uniform vec2 iCam;         // world point at the centre of the screen
+uniform float iZoom;       // pixels per world unit
+uniform int iType;         // which construction
+uniform int iIters;        // p for the tree types
+uniform float iGrow;       // growth stage: 2..p for the trees, 0..m for Kahane
+uniform int iColor;        // colour mode
+uniform int iTime;         // frames blended so far
+uniform int iDebug;        // 1: write the raw needle count to the red channel (used by tests)
+uniform float iMRef;       // needle count that maps to the top of the colour scale
+
+out vec4 fragColor;
+
+struct Acc {
+  float m;     // needles (triangles) through the point
+  vec3 col;    // sum of their direction colours
+  float deep;  // pieces that contain the point with more than a pixel to spare
+  float edge;  // distance in pixels to the nearest edge of any piece
+};
+
+// Smooth rainbow of even brightness (the "sinebow").
+vec3 sinebow(float t) {
+  vec3 c = sin(PI * (vec3(0.5 - t) + vec3(0.0, 1.0 / 3.0, 2.0 / 3.0)));
+  return c * c;
+}
+
+vec3 heat(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c0 = vec3(0.05, 0.03, 0.16), c1 = vec3(0.38, 0.07, 0.52), c2 = vec3(0.87, 0.25, 0.25);
+  vec3 c3 = vec3(0.99, 0.69, 0.20), c4 = vec3(1.00, 0.98, 0.86);
+  if (t < 0.25) return mix(c0, c1, t * 4.0);
+  if (t < 0.50) return mix(c1, c2, t * 4.0 - 1.0);
+  if (t < 0.75) return mix(c2, c3, t * 4.0 - 2.0);
+  return mix(c3, c4, t * 4.0 - 3.0);
+}
+
+// Records one triangle (or trapezoid) whose slice at the pixel's height is [0, len] in the
+// residual coordinate r. sl and sr are the slopes dx/dy of its left and right edges, which turn
+// horizontal distances into true distances for the outline modes.
+void addPiece(inout Acc acc, float r, float len, float sl, float sr, vec3 col, float pxs) {
+  float dl = r / sqrt(1.0 + sl * sl);
+  float dr = (len - r) / sqrt(1.0 + sr * sr);
+  if (r >= 0.0 && r <= len) {
+    acc.m += 1.0;
+    acc.col += col;
+    if (min(dl, dr) > 1.25 * pxs) acc.deep += 1.0;
+  }
+  acc.edge = min(acc.edge, min(abs(dl), abs(dr)) / pxs);
+}
+
+// One Perron–Schoenberg tree at growth stage G, sampled at (X, u) in level units (the paper's
+// coordinates times p, so level line k is u = k). Triangle d = d_0 d_1 ... of the tree has slice
+//   [u - 2 + sum_j d_j w_j(u), that + len(u)],  w_j(u) = 2^-j (j + 1 - u),  len(u) = 2^(1-D) (G - u),
+// with the last weight adjusted while a stage is part-way through its expansion.
+// side < 0: single tree palette; side = 0..3: which side of the square the tree stands on.
+void tree(float X, float u, float G, int side, float pxs, inout Acc acc) {
+  if (u < 0.0 || u > G) return;
+  float tol = (iColor >= COLOR_PAPER) ? 1.5 * pxs : 0.0;
+  int D = clamp(int(ceil(G - 1e-4)) - 2, 0, MAX_DIGITS);
+  float sigma = G - float(D + 1);
+  float w[MAX_DIGITS];
+  float lo[MAX_DIGITS + 1];
+  float hi[MAX_DIGITS + 1];
+  for (int j = 0; j < D; ++j) {
+    w[j] = (j < D - 1) ? exp2(-float(j)) * (float(j + 1) - u)
+                       : exp2(1.0 - float(D)) * (float(D + 1) - sigma - u);
+  }
+  float len = exp2(1.0 - float(D)) * (G - u);
+  lo[D] = 0.0;
+  hi[D] = len;
+  for (int j = D - 1; j >= 0; --j) {
+    lo[j] = lo[j + 1] + min(w[j], 0.0);
+    hi[j] = hi[j + 1] + max(w[j], 0.0);
+  }
+  float res[MAX_DIGITS + 1];
+  int nxt[MAX_DIGITS + 1];
+  res[0] = X - (u - 2.0);
+  if (res[0] < lo[0] - tol || res[0] > hi[0] + tol) return;
+  nxt[0] = 0;
+  float cell = exp2(1.0 - float(D));
+  float invN = exp2(-float(D));
+  int j = 0, idx = 0, steps = 0;
+  while (j >= 0 && steps < MAX_STEPS) {
+    ++steps;
+    if (j == D) {
+      float r = res[D];
+      float F = (float(idx) + clamp(r / max(len, 1e-30), 0.0, 1.0)) * invN;
+      vec3 col = side < 0 ? sinebow(0.85 * F) : sinebow(fract(0.625 + 0.25 * (F + float(side))));
+      float sl = 1.0 - float(idx) * cell;
+      addPiece(acc, r, len, sl, sl - cell, col, pxs);
+      --j;
+      idx >>= 1;
+      continue;
+    }
+    int c = nxt[j];
+    if (c > 1) {
+      --j;
+      idx >>= 1;
+      continue;
+    }
+    nxt[j] = c + 1;
+    float r = (c == 0) ? res[j] : res[j] - w[j];
+    if (r >= lo[j + 1] - tol && r <= hi[j + 1] + tol) {
+      res[j + 1] = r;
+      nxt[j + 1] = 0;
+      idx = (idx << 1) | c;
+      ++j;
+    }
+  }
+}
+
+// Kahane's construction: every segment from (c, 0) to (d/2, 1) with c and d in the middle-half
+// Cantor set C. Its slice at height t is (1 - t) C + (t/2) C, a projection of the four-corner Cantor
+// set C x C. Depth G: floor(G) whole levels of C, the next one part-way through losing its middle.
+void kahane(vec2 q, float G, float pxs, inout Acc acc) {
+  float t = q.y;
+  if (t < 0.0 || t > 1.0) return;
+  float tol = (iColor >= COLOR_PAPER) ? 1.5 * pxs : 0.0;
+  int D = clamp(int(ceil(G - 1e-4)), 0, KAHANE_MAX);
+  float rLast = (D == 0) ? 0.5 : 0.5 - 0.25 * clamp(G - float(D - 1), 0.0, 1.0);
+  float a = 1.0 - t, b = 0.5 * t, ab = a + b;
+  float stp[KAHANE_MAX];
+  float ell[KAHANE_MAX + 1];
+  ell[0] = 1.0;
+  for (int i = 1; i <= D; ++i) {
+    float ratio = (i == D) ? rLast : 0.25;
+    stp[i - 1] = (1.0 - ratio) * ell[i - 1];
+    ell[i] = ratio * ell[i - 1];
+  }
+  float res[KAHANE_MAX + 1];
+  float ca[KAHANE_MAX + 1];
+  float db[KAHANE_MAX + 1];
+  int nxt[KAHANE_MAX + 1];
+  res[0] = q.x;
+  ca[0] = 0.0;
+  db[0] = 0.0;
+  nxt[0] = 0;
+  if (res[0] < -tol || res[0] > ab + tol) return;
+  int j = 0, steps = 0;
+  while (j >= 0 && steps < MAX_STEPS) {
+    ++steps;
+    if (j == D) {
+      float r = res[D], e = ell[D], span = e * ab;
+      float f = clamp(r / max(span, 1e-30), 0.0, 1.0);
+      float run = 0.5 * (db[D] + f * e) - (ca[D] + f * e);   // horizontal run of the needle, -1 .. 1/2
+      float sl = 0.5 * db[D] - ca[D];
+      addPiece(acc, r, span, sl, sl - 0.5 * e, sinebow(0.85 * (run + 1.0) / 1.5), pxs);
+      --j;
+      continue;
+    }
+    int c = nxt[j];
+    if (c > 3) {
+      --j;
+      continue;
+    }
+    nxt[j] = c + 1;
+    float al = float(c & 1), be = float(c >> 1);
+    float r = res[j] - (a * al + b * be) * stp[j];
+    if (r >= -tol && r <= ell[j + 1] * ab + tol) {
+      res[j + 1] = r;
+      ca[j + 1] = ca[j] + al * stp[j];
+      db[j + 1] = db[j] + be * stp[j];
+      nxt[j + 1] = 0;
+      ++j;
+    }
+  }
+}
+
+// The triangle Δ_G (apex (0, G), base [-G, G] in level units) cut into its elementary triangles,
+// none of them moved.
+void triangleFan(vec2 P, float G, float pxs, inout Acc acc) {
+  float X = P.x, u = P.y;
+  if (u < 0.0 || u > G) return;
+  float hw = G - u;
+  int D = max(0, int(ceil(G - 1e-4)) - 2);
+  float N = exp2(float(D));
+  float F = 0.5 * (X / max(hw, 1e-30) + 1.0);
+  bool inside = abs(X) <= hw;
+  if (inside) {
+    acc.m += 1.0;
+    acc.col += sinebow(0.85 * clamp(F, 0.0, 1.0));
+  }
+  if (iColor >= COLOR_PAPER) {
+    // Paper mode draws every fan line; outline mode only the two sides.
+    float k = (iColor == COLOR_PAPER) ? clamp(floor(F * N + 0.5), 0.0, N) : (F < 0.5 ? 0.0 : N);
+    vec2 dir = normalize(vec2(2.0 * k / N - 1.0, -1.0));
+    vec2 rel = vec2(X, u - G);
+    float dist = abs(rel.x * dir.y - rel.y * dir.x);
+    acc.edge = min(acc.edge, dist / pxs);
+    if (inside && dist > 1.25 * pxs) acc.deep += 1.0;
+  }
+}
+
+void main() {
+  vec2 jit = vec2(0.5);
+  if (iTime > 0 && iDebug == 0) jit = fract(vec2(0.5) + float(iTime) * vec2(0.7548776662, 0.5698402910));
+  vec2 pix = floor(gl_FragCoord.xy) + jit;
+  vec2 q = iCam + (pix - 0.5 * iResolution) / iZoom;
+
+  Acc acc = Acc(0.0, vec3(0.0), 0.0, 1e9);
+  float p = float(iIters);
+  float pxs = 1.0 / iZoom;
+  if (iType == TYPE_TREE) {
+    tree(q.x * p, q.y * p, iGrow, -1, pxs * p, acc);
+  } else if (iType == TYPE_SQUARE) {
+    vec2 d = q - vec2(0.0, 1.0);
+    for (int side = 0; side < 4; ++side) {
+      tree(d.x * p, (d.y + 1.0) * p, iGrow, side, pxs * p, acc);
+      d = vec2(d.y, -d.x);  // a quarter turn clockwise about the centre of the square
+    }
+  } else if (iType == TYPE_KAHANE) {
+    kahane(q, iGrow, pxs, acc);
+  } else {
+    triangleFan(q * p, iGrow, pxs * p, acc);
+  }
+
+  if (iDebug != 0) {
+    fragColor = vec4(min(acc.m, 255.0) / 255.0, 0.0, 0.0, 1.0);
+    return;
+  }
+
+  float m = acc.m;
+  float lm = m > 0.0 ? clamp(log2(m) / log2(max(iMRef, 2.0)), 0.0, 1.0) : 0.0;
+  vec3 col;
+  if (iColor == COLOR_DIRECTION) {
+    col = m > 0.0 ? acc.col / m : vec3(0.0);
+    col = col * (0.8 + 0.2 * lm) + vec3(0.2 * lm * lm);
+  } else if (iColor == COLOR_MULTIPLICITY) {
+    col = m > 0.0 ? heat(0.16 + 0.84 * lm) : vec3(0.0);
+  } else {
+    vec3 paper = vec3(0.985, 0.978, 0.962);
+    vec3 ink = vec3(0.07, 0.07, 0.09);
+    float line = 1.0 - smoothstep(0.3, 1.05, acc.edge);
+    if (iColor == COLOR_PAPER) {
+      col = m > 0.0 ? vec3(0.83, 0.83, 0.85) : paper;
+      col = mix(col, ink, line);
+    } else {
+      col = m > 0.0 ? vec3(0.90, 0.90, 0.92) : paper;
+      if (acc.deep < 0.5) col = mix(col, ink, line);
+    }
+  }
+  fragColor = vec4(col, 1.0 / float(iTime + 1));
+}
+</script>
+
+<script id="blit-src" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+uniform sampler2D tex;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(texelFetch(tex, ivec2(gl_FragCoord.xy), 0).rgb, 1.0);
+}
+</script>
+
+<script>
+(function () {
+  'use strict';
+  var K = KakeyaCore, TYPES = K.TYPES;
+  var $ = function (id) { return document.getElementById(id); };
+
+  // Orbit points per second. FSE plays 4000; at 1760 a single needle (a 2-step cycle) sounds at
+  // 880 Hz and m needles at 880/m Hz, which keeps the deep parts of the tree audible.
+  var ORBIT_STEP_RATE = 1760;
+  var MAX_FRAMES = 48;
+  var VIEWS = [
+    [-1.08, -0.06, 1.08, 1.07],
+    [-1.08, -0.08, 1.08, 2.08],
+    [-0.14, -0.08, 1.14, 1.08],
+    [-1.08, -0.06, 1.08, 1.07]
+  ];
+  var COLOR_COUNT = 4;
+  var SOUNDS = ['orbit', 'chord', 'off'];
+
+  var state = {
+    type: 0,
+    depth: TYPES.map(function (t) { return t.depthDefault; }),
+    G: 2,
+    color: 0,
+    sound: 'orbit',
+    damp: false,
+    quant: false,
+    levels: true,
+    ghost: true
+  };
+
+  var qs = new URLSearchParams(location.search);
+  var introGrowth = !qs.has('grow') && !(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+  if (qs.has('type')) state.type = clampInt(+qs.get('type'), 0, 3);
+  if (qs.has('p')) {
+    var t0 = TYPES[state.type];
+    state.depth[state.type] = clampInt(+qs.get('p'), t0.depthMin, t0.depthMax);
+  }
+  if (qs.has('color')) state.color = clampInt(+qs.get('color'), 0, COLOR_COUNT - 1);
+  if (qs.has('sound') && SOUNDS.indexOf(qs.get('sound')) >= 0) state.sound = qs.get('sound');
+  if (qs.get('levels') === '0') state.levels = false;
+  if (qs.get('ghost') === '0') state.ghost = false;
+  if (qs.get('ui') === '0') document.body.classList.add('noui');
+  state.G = qs.has('grow') ? +qs.get('grow') : depth();
+  clampGrow();
+
+  function clampInt(v, lo, hi) { v = Math.round(v); return isFinite(v) ? Math.min(hi, Math.max(lo, v)) : lo; }
+  function info() { return TYPES[state.type]; }
+  function depth() { return state.depth[state.type]; }
+  function growMin() { return info().growMin; }
+  function clampGrow() { state.G = Math.min(depth(), Math.max(growMin(), isFinite(state.G) ? state.G : depth())); }
+
+  // ---------------------------------------------------------------------------------------------
+  // WebGL
+  // ---------------------------------------------------------------------------------------------
+  var glCanvas = $('gl'), ov = $('overlay'), ctx = ov.getContext('2d');
+  var gl = glCanvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: true });
+  if (!gl) {
+    fatal('This explorer needs WebGL 2. Try a current Chrome, Edge, Firefox or Safari.');
+    return;
+  }
+  var floatTargets = !!gl.getExtension('EXT_color_buffer_float');
+
+  function compile(type, src) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  function program(vsrc, fsrc) {
+    var pr = gl.createProgram();
+    gl.attachShader(pr, compile(gl.VERTEX_SHADER, vsrc));
+    gl.attachShader(pr, compile(gl.FRAGMENT_SHADER, fsrc));
+    gl.linkProgram(pr);
+    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
+    return pr;
+  }
+  var prog, blit;
+  try {
+    prog = program($('vert-src').textContent, $('frag-src').textContent);
+    blit = program($('vert-src').textContent, $('blit-src').textContent);
+  } catch (err) {
+    fatal('Shader failed to compile: ' + err.message);
+    return;
+  }
+  var U = {};
+  ['iResolution', 'iCam', 'iZoom', 'iType', 'iIters', 'iGrow', 'iColor', 'iTime', 'iDebug', 'iMRef']
+    .forEach(function (n) { U[n] = gl.getUniformLocation(prog, n); });
+  var blitTex = gl.getUniformLocation(blit, 'tex');
+  var vao = gl.createVertexArray();
+
+  function makeTarget(w, h, useFloat) {
+    var tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (useFloat) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    var fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    var ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (!ok) {
+      gl.deleteFramebuffer(fb);
+      gl.deleteTexture(tex);
+      return useFloat ? makeTarget(w, h, false) : null;
+    }
+    return { tex: tex, fb: fb, w: w, h: h };
+  }
+  function freeTarget(t) {
+    if (!t) return;
+    gl.deleteFramebuffer(t.fb);
+    gl.deleteTexture(t.tex);
+  }
+
+  var renderScale = Math.min(Math.max(+(qs.get('scale') || 1), 0.25), 3);
+  var target = null, W = 0, H = 0;
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    glCanvas.width = Math.max(1, Math.round(W * renderScale));
+    glCanvas.height = Math.max(1, Math.round(H * renderScale));
+    ov.width = Math.round(W * dpr);
+    ov.height = Math.round(H * dpr);
+    freeTarget(target);
+    target = makeTarget(glCanvas.width, glCanvas.height, floatTargets);
+    frame = 0;
+  }
+
+  function mRef() {
+    var p = depth();
+    if (state.type === K.TREE) return 2 * p;
+    if (state.type === K.SQUARE) return 2 * p + 4;
+    if (state.type === K.KAHANE) return 4 + 2 * p;
+    return 2;
+  }
+
+  function setUniforms(w, h, debug, frameIndex) {
+    gl.uniform2f(U.iResolution, w, h);
+    gl.uniform2f(U.iCam, cam.x, cam.y);
+    gl.uniform1f(U.iZoom, cam.zoom * (w / W));
+    gl.uniform1i(U.iType, state.type);
+    gl.uniform1i(U.iIters, depth());
+    gl.uniform1f(U.iGrow, state.G);
+    gl.uniform1i(U.iColor, state.color);
+    gl.uniform1i(U.iTime, frameIndex);
+    gl.uniform1i(U.iDebug, debug ? 1 : 0);
+    gl.uniform1f(U.iMRef, mRef());
+  }
+
+  function renderSample() {
+    if (!target) return;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
+    gl.viewport(0, 0, target.w, target.h);
+    gl.useProgram(prog);
+    setUniforms(target.w, target.h, false, frame);
+    if (frame === 0) {
+      gl.disable(gl.BLEND);
+    } else {
+      gl.enable(gl.BLEND);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+    }
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disable(gl.BLEND);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+    gl.useProgram(blit);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, target.tex);
+    gl.uniform1i(blitTex, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    frame++;
+  }
+
+  // Renders the raw needle count at pixel centres into a w x h array (for the browser tests).
+  function renderDebug(w, h) {
+    var t = makeTarget(w, h, false);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fb);
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(prog);
+    var saved = W;
+    W = w;
+    setUniforms(w, h, true, 0);
+    W = saved;
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    var px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    freeTarget(t);
+    var out = new Array(w * h);
+    for (var i = 0; i < w * h; i++) out[i] = px[4 * i];
+    frame = 0;
+    return out;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Camera: smoothed zoom about a focal point, as in FSE's main loop.
+  // ---------------------------------------------------------------------------------------------
+  var cam = { x: 0, y: 0.5, zoom: 300 }, dest = { x: 0, y: 0.5, zoom: 300 }, focal = { x: 0, y: 0 };
+  var frame = 0;
+
+  function s2w(sx, sy) { return [cam.x + (sx - W / 2) / cam.zoom, cam.y - (sy - H / 2) / cam.zoom]; }
+  function w2s(x, y) { return [W / 2 + (x - cam.x) * cam.zoom, H / 2 - (y - cam.y) * cam.zoom]; }
+
+  function resetView() {
+    var b = VIEWS[state.type], ui = !document.body.classList.contains('noui');
+    var left = ui && W > 980 ? 370 : 0, bottom = !ui ? 10 : W > 700 ? 92 : 120, top = ui && W <= 980 ? 250 : 0;
+    var aw = Math.max(100, W - left - 20), ah = Math.max(100, H - top - bottom - 10);
+    var z = Math.min(aw / (b[2] - b[0]), ah / (b[3] - b[1]));
+    var cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+    cam.zoom = dest.zoom = z;
+    cam.x = dest.x = cx - (left + aw / 2 + 10 - W / 2) / z;
+    cam.y = dest.y = cy + (top + ah / 2 + 5 - H / 2) / z;
+    frame = 0;
+  }
+
+  // FSE moves the camera 20% of the way to its destination every frame at 60 fps; this does the
+  // same per 1/60 s of real time, so a slow GPU does not make zooming feel sluggish.
+  var lastCamTime = 0;
+  function stepCamera(now) {
+    var dt = Math.min(250, Math.max(0, now - (lastCamTime || now)));
+    lastCamTime = now;
+    var k = 1 - Math.pow(0.8, dt * 60 / 1000);
+    var before = s2w(focal.x, focal.y);
+    var z0 = cam.zoom, x0 = cam.x, y0 = cam.y;
+    cam.zoom = cam.zoom * (1 - k) + dest.zoom * k;
+    if (Math.abs(cam.zoom / dest.zoom - 1) < 1e-4) cam.zoom = dest.zoom;
+    var after = s2w(focal.x, focal.y);
+    cam.x += before[0] - after[0];
+    cam.y += before[1] - after[1];
+    dest.x += before[0] - after[0];
+    dest.y += before[1] - after[1];
+    cam.x = cam.x * (1 - k) + dest.x * k;
+    cam.y = cam.y * (1 - k) + dest.y * k;
+    if (Math.abs(cam.x - dest.x) * cam.zoom < 0.02) cam.x = dest.x;
+    if (Math.abs(cam.y - dest.y) * cam.zoom < 0.02) cam.y = dest.y;
+    return cam.zoom !== z0 || cam.x !== x0 || cam.y !== y0;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Model, area estimate, needles under the mouse
+  // ---------------------------------------------------------------------------------------------
+  var mdl = null, mdlKey = '';
+  function model() {
+    var key = state.type + ':' + depth() + ':' + state.G;
+    if (key !== mdlKey) {
+      mdl = K.model(state.type, depth(), state.G);
+      mdlKey = key;
+    }
+    return mdl;
+  }
+
+  var areaJob = null, areaKey = '';
+  function refreshArea() {
+    var m = model();
+    if (mdlKey === areaKey) return;
+    areaKey = mdlKey;
+    areaJob = m.areaJob();
+  }
+  function runAreaJob() {
+    if (!areaJob || areaJob.done()) return;
+    var t = performance.now();
+    while (performance.now() - t < 6 && !areaJob.step());
+    hudDirty = true;
+  }
+
+  var hear = null;      // {x, y, needles} for the point being played
+  var cursor = null;    // {x, y, m, slice}
+  var sliceBuf = null;
+
+  function sliceAt(y) {
+    var m = model(), p = depth();
+    if (state.type === K.TREE) {
+      var st = m.stage, u = y * p;
+      if (!(u >= 0 && u <= st.G)) return null;
+      var n = Math.pow(2, st.D);
+      if (n > (1 << 18)) return null;
+      if (!sliceBuf || sliceBuf[0].length < n) sliceBuf = [new Float64Array(n), new Float64Array(n)];
+      return { len: K.treeSlice(st, u, sliceBuf[0], sliceBuf[1]) / p, full: 2 * Math.max(0, st.G / p - y) };
+    }
+    if (state.type === K.KAHANE) {
+      var ks = m.stage;
+      if (!(y >= 0 && y <= 1)) return null;
+      var n4 = Math.pow(4, ks.D);
+      if (!sliceBuf || sliceBuf[0].length < n4) sliceBuf = [new Float64Array(n4), new Float64Array(n4)];
+      return { len: K.kahaneSlice(ks, y, sliceBuf[0], sliceBuf[1]), full: 1 - y / 2 };
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Audio
+  // ---------------------------------------------------------------------------------------------
+  var audio = null, audioFailed = false, audioPending = null;
+  function ensureAudio() {
+    if (audio) {
+      if (audio.ctx.state !== 'running') audio.ctx.resume();
+      return Promise.resolve(audio);
+    }
+    if (audioPending) return audioPending;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) { audioFailed = true; return Promise.resolve(null); }
+    var ac = new AC({ latencyHint: 'interactive' });
+    var src = $('synth-src').textContent;
+    var viaScriptProcessor = function () {
+      var Core = new Function(src + '\nreturn KakeyaSynthCore;')();
+      var core = new Core(ac.sampleRate);
+      var sp = ac.createScriptProcessor(1024, 0, 2);
+      sp.onaudioprocess = function (ev) {
+        var b = ev.outputBuffer;
+        core.process(b.getChannelData(0), b.getChannelData(1), b.length);
+      };
+      sp.connect(ac.destination);
+      return { ctx: ac, send: function (m) { core.handle(m); }, kind: 'script processor' };
+    };
+    var ready;
+    if (ac.audioWorklet && window.AudioWorkletNode) {
+      // A blob: URL works over http(s). Pages opened from disk have an opaque origin and Chrome
+      // refuses blob:null/... as cross-origin, but it accepts the same code as a data: URL.
+      var bytes = new TextEncoder().encode(src), bin = '';
+      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      var blobUrl = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
+      var dataUrl = 'data:application/javascript;base64,' + btoa(bin);
+      ready = ac.audioWorklet.addModule(blobUrl).catch(function () {
+        return ac.audioWorklet.addModule(dataUrl);
+      }).then(function () {
+        var node = new AudioWorkletNode(ac, 'kakeya-synth', { numberOfInputs: 0, outputChannelCount: [2] });
+        node.connect(ac.destination);
+        return { ctx: ac, send: function (m) { node.port.postMessage(m); }, kind: 'audio worklet' };
+      }).catch(viaScriptProcessor);
+    } else {
+      ready = Promise.resolve().then(viaScriptProcessor);
+    }
+    audioPending = ready.then(function (a) {
+      audio = a;
+      audio.send({ cmd: 'config', damp: state.damp });
+      if (ac.state !== 'running') ac.resume();
+      return a;
+    }).catch(function () { audioFailed = true; return null; });
+    return audioPending;
+  }
+  function send(msg) {
+    if (audio) audio.send(msg);
+    else ensureAudio().then(function (a) { if (a) a.send(msg); });
+  }
+
+  // Pitch for the chord voice: three octaves from 110 Hz across the construction's directions,
+  // optionally snapped to A minor pentatonic.
+  function pitchOf(u) {
+    var f = 110 * Math.pow(2, 3 * Math.min(1, Math.max(0, u)));
+    if (!state.quant) return f;
+    var midi = 69 + 12 * Math.log2(f / 440), best = midi, bestD = 1e9, steps = [0, 3, 5, 7, 10];
+    for (var o = 33; o <= 93; o += 12) {
+      for (var i = 0; i < steps.length; i++) {
+        var d = Math.abs(o + steps[i] - midi);
+        if (d < bestD) { bestD = d; best = o + steps[i]; }
+      }
+    }
+    return 440 * Math.pow(2, (best - 69) / 12);
+  }
+
+  // The orbit of a point: the unit vectors along every needle through it, both ways, in angular
+  // order. m needles give a cycle of 2m points.
+  function orbitPoints(needles) {
+    var ang = [];
+    for (var i = 0; i < needles.length; i++) {
+      var n = needles[i], a = Math.atan2(n.ay - n.by, n.ax - n.bx);
+      ang.push(a, a + Math.PI);
+    }
+    ang = ang.map(function (a) { return ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI); })
+      .sort(function (a, b) { return a - b; });
+    var pts = new Float32Array(ang.length * 2);
+    for (i = 0; i < ang.length; i++) {
+      pts[2 * i] = Math.cos(ang[i]);
+      pts[2 * i + 1] = Math.sin(ang[i]);
+    }
+    return pts;
+  }
+
+  // Pitch of an m-needle orbit: the synth holds each point for a whole number of samples.
+  function orbitHz(m) {
+    var sr = audio ? audio.ctx.sampleRate : 48000;
+    return sr / Math.round(sr / ORBIT_STEP_RATE) / (2 * m);
+  }
+
+  function sendSound(reset) {
+    if (!hear) return;
+    if (state.sound === 'off') { send({ cmd: 'stop' }); return; }
+    var nd = hear.needles;
+    if (state.sound === 'orbit') {
+      send({ cmd: 'orbit', pts: orbitPoints(nd.slice(0, 1024)), stepRate: ORBIT_STEP_RATE, reset: reset });
+    } else {
+      var pick = nd;
+      if (nd.length > 48) {
+        var sorted = nd.slice().sort(function (a, b) { return a.u - b.u; });
+        pick = [];
+        for (var i = 0; i < 48; i++) pick.push(sorted[Math.floor((i + 0.5) * sorted.length / 48)]);
+      }
+      send({ cmd: 'chord', reset: reset, voices: pick.map(function (n) {
+        return { key: n.key, freq: pitchOf(n.u), pan: 2 * n.u - 1 };
+      }) });
+    }
+  }
+
+  function hearAt(sx, sy, reset) {
+    var w = s2w(sx, sy);
+    hear = { x: w[0], y: w[1], needles: model().needles(w[0], w[1], 4096) };
+    sendSound(reset);
+    hudDirty = true;
+  }
+  function rehear() {
+    if (!hear) return;
+    hear.needles = model().needles(hear.x, hear.y, 4096);
+    sendSound(false);
+    hudDirty = true;
+  }
+  function stopSound() {
+    hear = null;
+    if (audio) audio.send({ cmd: 'stop' });
+    hudDirty = true;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Overlay: level lines, the original triangle, and the needles through the played point.
+  // ---------------------------------------------------------------------------------------------
+  function line(x0, y0, x1, y1) {
+    var a = w2s(x0, y0), b = w2s(x1, y1);
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+  }
+  function poly(pts, close) {
+    ctx.beginPath();
+    for (var i = 0; i < pts.length; i++) {
+      var s = w2s(pts[i][0], pts[i][1]);
+      if (i) ctx.lineTo(s[0], s[1]); else ctx.moveTo(s[0], s[1]);
+    }
+    if (close) ctx.closePath();
+    ctx.stroke();
+  }
+
+  function drawOverlay() {
+    var dpr = ov.width / W;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    var paper = state.color >= 2;
+    var faint = paper ? 'rgba(20,20,30,0.38)' : 'rgba(255,255,255,0.30)';
+    var faintText = paper ? 'rgba(20,20,30,0.6)' : 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = 1;
+    var p = depth();
+
+    if (state.levels) {
+      ctx.strokeStyle = faint;
+      ctx.fillStyle = faintText;
+      ctx.font = '10px "Roboto Mono", ui-monospace, monospace';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      if (state.type === K.TREE || state.type === K.TRIANGLE) {
+        var every = Math.max(1, Math.ceil(13 / (cam.zoom / p)));
+        ctx.beginPath();
+        for (var k = 0; k <= p; k++) line(-1.04, k / p, 1.04, k / p);
+        ctx.stroke();
+        for (k = 0; k <= p; k += every) {
+          var s = w2s(-1.04, k / p);
+          ctx.fillText(String(k), s[0] - 4, s[1]);
+        }
+      } else if (state.type === K.KAHANE) {
+        ctx.beginPath();
+        line(-0.1, 0, 1.1, 0);
+        line(-0.1, 1, 1.1, 1);
+        ctx.stroke();
+        var s0 = w2s(-0.1, 0), s1 = w2s(-0.1, 1);
+        ctx.fillText('C', s0[0] - 4, s0[1]);
+        ctx.fillText('C/2', s1[0] - 4, s1[1]);
+      }
+    }
+
+    if (state.ghost) {
+      ctx.strokeStyle = faint;
+      ctx.setLineDash([5, 4]);
+      if (state.type === K.TREE || state.type === K.TRIANGLE) {
+        poly([[-1, 0], [1, 0], [0, 1]], true);
+      } else if (state.type === K.SQUARE) {
+        poly([[-1, 0], [1, 0], [1, 2], [-1, 2]], true);
+        ctx.beginPath();
+        line(-1, 0, 1, 2);
+        line(1, 0, -1, 2);
+        ctx.stroke();
+      } else {
+        poly([[0, 0], [1, 0], [0.5, 1], [0, 1]], true);
+      }
+      ctx.setLineDash([]);
+    }
+
+    if (hear) {
+      var nd = hear.needles;
+      ctx.strokeStyle = 'rgba(255,30,30,' + Math.min(1, Math.max(0.22, 2.2 / Math.sqrt(nd.length || 1))) + ')';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      for (var i = 0; i < nd.length; i++) line(nd[i].bx, nd[i].by, nd[i].ax, nd[i].ay);
+      ctx.stroke();
+      var c = w2s(hear.x, hear.y);
+      ctx.strokeStyle = '#ff3030';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(c[0], c[1], 4, 0, 2 * Math.PI);
+      ctx.stroke();
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Text: HUD, legend, help
+  // ---------------------------------------------------------------------------------------------
+  var hudDirty = true, hudTime = 0;
+  function fmt(v, d) { return isFinite(v) ? v.toFixed(d === undefined ? 4 : d) : '…'; }
+
+  function updateHud(now) {
+    if (!hudDirty && now - hudTime < 250) return;
+    hudDirty = false;
+    hudTime = now;
+    model();
+    var p = depth(), lines = [], G = state.G, growing = G < p - 1e-9;
+    var stageText = growing ? '  ·  growth stage ' + fmt(G, 2) + ' of ' + p : '';
+    if (state.type === K.TREE) {
+      lines.push('Σp, the Perron–Schoenberg tree  ·  p = ' + p + '  ·  n = 2^(p−2) = ' +
+        Math.pow(2, p - 2).toLocaleString() + ' triangles' + stageText);
+    } else if (state.type === K.SQUARE) {
+      lines.push('Full square: four trees, every direction  ·  p = ' + p + '  ·  4 × ' +
+        Math.pow(2, p - 2).toLocaleString() + ' triangles' + stageText);
+    } else if (state.type === K.KAHANE) {
+      lines.push("Kahane's set: segments from C to C/2  ·  depth m = " + p + '  ·  4^m = ' +
+        Math.pow(4, p).toLocaleString() + ' trapezoids' + (G < p - 1e-9 ? '  ·  depth ' + fmt(G, 2) : ''));
+    } else {
+      lines.push('Triangle Δ, nothing slid  ·  p = ' + p + '  ·  ' + Math.pow(2, p - 2).toLocaleString() +
+        ' elementary triangles' + stageText);
+    }
+
+    // No estimate is kept while the growth animation runs; it starts again when the stage settles.
+    var job = areaJob && areaKey === mdlKey ? areaJob : null;
+    var a = job ? job.value() : NaN;
+    var areaStr = '<span class="k">area</span> ' + (isFinite(a) ? (job.exact ? '' : '≈ ') + fmt(a) : '…') +
+      (job && !job.exact && isFinite(a) ? ' ± ' + fmt(2 * job.error()) : '') +
+      (job && !job.done() ? ' <span class="k">(computing ' + Math.round(100 * job.progress()) + '%)</span>' : '');
+    if (state.type === K.TREE) {
+      areaStr += '   <span class="k">paper\'s bound 2/p =</span> ' + fmt(2 / p) +
+        '   <span class="k">Δ has area 1</span>';
+    } else if (state.type === K.SQUARE) {
+      areaStr += '   <span class="k">the square has area 4</span>';
+    } else if (state.type === K.KAHANE) {
+      areaStr += '   <span class="k">→ 0 as m → ∞, slowly</span>';
+    }
+    lines.push(areaStr);
+
+    if (cursor) {
+      var c = '<span class="k">cursor</span> ' + cursor.m + (cursor.m === 1 ? ' needle' : ' needles') + ' through this point';
+      if (cursor.slice) {
+        c += '   <span class="k">slice at this height:</span> ' + fmt(cursor.slice.len) +
+          ' <span class="k">long (' + (state.type === K.KAHANE ? 'full trapezoid' : 'Δ') + ': ' + fmt(cursor.slice.full) + ')</span>';
+      }
+      lines.push(c);
+    }
+
+    var snd = '<span class="k">sound</span> ';
+    if (state.sound === 'off') snd += 'off';
+    else if (audioFailed) snd += '<span class="warn">audio unavailable in this browser</span>';
+    else if (!hear) snd += (state.sound === 'orbit' ? 'orbit' : 'chord') + ' · click a point to hear it';
+    else if (!hear.needles.length) snd += 'silent: no needle passes through this point (like an orbit that escapes)';
+    else if (state.sound === 'orbit') {
+      var mm = Math.min(hear.needles.length, 1024);
+      snd += 'orbit · ' + mm + (mm === 1 ? ' needle' : ' needles') + ' → ' + (2 * mm) + '-step cycle → ' +
+        fmt(orbitHz(mm), 1) + ' Hz';
+    } else {
+      snd += 'chord · ' + Math.min(48, hear.needles.length) + ' notes, pitch = direction';
+    }
+    snd += '   <span class="k">dampening ' + (state.damp ? 'on' : 'off') + '</span>';
+    lines.push(snd);
+    $('hud').innerHTML = lines.join('\n');
+  }
+
+  function sinebowCss(t) {
+    var r = Math.sin(Math.PI * (0.5 - t)), g = Math.sin(Math.PI * (0.5 - t + 1 / 3)), b = Math.sin(Math.PI * (0.5 - t + 2 / 3));
+    return 'rgb(' + Math.round(255 * r * r) + ',' + Math.round(255 * g * g) + ',' + Math.round(255 * b * b) + ')';
+  }
+  function updateLegend() {
+    var stops = [], lo = '', mid = '', hi = '';
+    if (state.color === 0) {
+      var cyclic = state.type === K.SQUARE;
+      for (var i = 0; i <= 16; i++) stops.push(sinebowCss((cyclic ? 1 : 0.85) * i / 16));
+      if (state.type === K.SQUARE) { lo = '225°'; mid = 'needle direction, all the way round'; hi = '225°'; }
+      else if (state.type === K.KAHANE) { lo = 'run −1'; mid = 'needle direction'; hi = 'run +1/2'; }
+      else { lo = '↙ 45° left'; mid = 'needle direction'; hi = '45° right ↘'; }
+    } else if (state.color === 1) {
+      ['#080529', '#610d85', '#de4040', '#fcb033', '#fffadb'].forEach(function (c) { stops.push(c); });
+      lo = '1 needle';
+      mid = 'needles through the point (log scale)';
+      hi = Math.round(mRef()) + '+';
+    } else {
+      stops = ['#ddd', '#ddd'];
+      mid = state.color === 2 ? 'every triangle drawn, like Figs. 9–15' : 'outline of the union, like Fig. 16';
+    }
+    $('legend').style.background = 'linear-gradient(to right,' + stops.join(',') + ')';
+    $('legendLo').textContent = lo;
+    $('legendMid').textContent = mid;
+    $('legendHi').textContent = hi;
+  }
+
+  var HELP = [
+    '  H - Toggle this help                 Left mouse   - Click or drag to hear a point',
+    '  1 - Perron–Schoenberg tree Σp        Middle mouse - Drag to pan (also right-drag, Shift+drag)',
+    '  2 - Full square: four trees          Right click  - Stop orbit and sound',
+    "  3 - Kahane's Cantor-set version      Scroll wheel - Zoom in and out",
+    '  4 - Triangle Δ, nothing slid         Space        - Stop the sound',
+    '↑ ↓ - p: one bisection more or fewer   C - Cycle colour mode',
+    '← → - Scrub the growth stage           A - Cycle sound: orbit / chord / off',
+    '  G - Grow the tree from Σ2            D - Toggle audio dampening',
+    '  L - Level lines y = k/p              Q - Snap chord pitches to a pentatonic scale',
+    '  T - Outline of the original Δ        S - Save snapshot',
+    '  R - Reset view                       F - Fullscreen',
+    '',
+    '<span class="dim">What you see.  Σp is built as on pp. 701–705 of Besicovitch\'s article: start from the',
+    'triangle Δ2, and p − 2 times bisect every triangle and expand both halves up to the next level.',
+    'Σp is a union of 2^(p−2) triangles that between them contain a segment of length ≥ 1 in every',
+    'direction of the original triangle Δ, which has area 1. Σp has area exactly 2/p: every horizontal',
+    'slice between level 1 and level p−1 has total length 2/p (move the mouse and read the HUD).',
+    '',
+    'What you hear.  In the Fractal Sound Explorer a click plays the orbit of the point, x on the left',
+    'channel and y on the right. A Kakeya set has no orbits; what a point has is its bush: the needles',
+    'through it. Orbit mode plays the directions of those needles, both ways round, as points on',
+    'the unit circle, one step each in FSE\'s cosine-interpolated style. m needles make a 2m-step',
+    'cycle, so a lone needle sounds at about 880 Hz and m needles at about 880/m Hz: you hear',
+    'how much the construction has piled up there. Outside the set the sound stops, like an orbit',
+    'that escapes. Chord mode instead gives each needle its own note, pitch set by its direction,',
+    'so a Kakeya set contains every pitch somewhere.</span>',
+    '',
+    '<span class="dim">Built on the design of HackerPoet\'s Fractal Sound Explorer (MIT licence).</span>'
+  ].join('\n');
+  $('help').innerHTML = HELP;
+
+  // ---------------------------------------------------------------------------------------------
+  // Controls
+  // ---------------------------------------------------------------------------------------------
+  var anim = null;
+  function startGrowth(from, to) {
+    var dur = Math.min(9000, Math.max(1200, 520 * (to - from)));
+    anim = { from: from, to: to, t0: null, dur: dur };   // the clock starts at the next frame
+  }
+  function stepGrowth(now) {
+    if (!anim) return false;
+    if (anim.t0 === null) anim.t0 = now;
+    var t = Math.min(1, (now - anim.t0) / anim.dur);
+    var e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    state.G = anim.from + (anim.to - anim.from) * e;
+    if (t >= 1) {
+      state.G = anim.to;
+      anim = null;
+    }
+    paramsChanged(false);
+    return true;
+  }
+
+  function paramsChanged(full) {
+    clampGrow();
+    frame = 0;
+    model();
+    if (!anim) refreshArea();
+    if (hear) rehear();
+    if (full) syncPanel();
+    else syncGrowSlider();
+    hudDirty = true;
+  }
+
+  function setType(t) {
+    if (t === state.type) return;
+    state.type = t;
+    state.G = depth();
+    anim = null;
+    stopSound();
+    resetView();
+    paramsChanged(true);
+  }
+  function setDepth(d) {
+    var t = info();
+    d = clampInt(d, t.depthMin, t.depthMax);
+    if (d === depth()) return;
+    state.depth[state.type] = d;
+    state.G = d;
+    anim = null;
+    paramsChanged(true);
+  }
+  function setGrowth(G) {
+    anim = null;
+    state.G = G;
+    paramsChanged(false);
+  }
+
+  function syncGrowSlider() {
+    var lo = growMin(), hi = depth();
+    $('grow').value = hi > lo ? Math.round(1000 * (state.G - lo) / (hi - lo)) : 1000;
+  }
+  function syncPanel() {
+    var t = info();
+    $('type').value = String(state.type);
+    $('depthLabel').textContent = t.depthName === 'p' ? 'p' : 'depth m';
+    $('depth').min = t.depthMin;
+    $('depth').max = t.depthMax;
+    $('depth').value = depth();
+    $('depthOut').textContent = depth();
+    $('color').value = String(state.color);
+    $('sound').value = state.sound;
+    $('levels').checked = state.levels;
+    $('ghost').checked = state.ghost;
+    $('damp').checked = state.damp;
+    $('quant').checked = state.quant;
+    syncGrowSlider();
+    updateLegend();
+  }
+
+  $('panelTitle').addEventListener('click', function () { $('panel').classList.toggle('collapsed'); });
+  $('helpHint').addEventListener('click', function () { $('help').classList.toggle('show'); });
+  $('help').addEventListener('click', function () { $('help').classList.remove('show'); });
+  $('type').addEventListener('change', function (e) { setType(+e.target.value); e.target.blur(); });
+  $('depth').addEventListener('input', function (e) { setDepth(+e.target.value); });
+  $('depth').addEventListener('change', function (e) { e.target.blur(); });
+  $('grow').addEventListener('input', function (e) {
+    var lo = growMin(), hi = depth();
+    setGrowth(lo + (hi - lo) * (+e.target.value) / 1000);
+  });
+  $('grow').addEventListener('change', function (e) { e.target.blur(); });
+  $('growBtn').addEventListener('click', function (e) { startGrowth(growMin(), depth()); e.target.blur(); });
+  $('color').addEventListener('change', function (e) { setColor(+e.target.value); e.target.blur(); });
+  $('sound').addEventListener('change', function (e) { setSound(e.target.value); e.target.blur(); });
+  $('levels').addEventListener('change', function (e) { state.levels = e.target.checked; e.target.blur(); });
+  $('ghost').addEventListener('change', function (e) { state.ghost = e.target.checked; e.target.blur(); });
+  $('damp').addEventListener('change', function (e) { setDamp(e.target.checked); e.target.blur(); });
+  $('quant').addEventListener('change', function (e) { state.quant = e.target.checked; if (hear) sendSound(false); e.target.blur(); });
+
+  function setColor(c) {
+    state.color = ((c % COLOR_COUNT) + COLOR_COUNT) % COLOR_COUNT;
+    frame = 0;
+    syncPanel();
+  }
+  function setSound(s) {
+    state.sound = s;
+    if (hear) sendSound(true);
+    if (s === 'off' && audio) audio.send({ cmd: 'stop' });
+    syncPanel();
+    hudDirty = true;
+  }
+  function setDamp(on) {
+    state.damp = on;
+    if (audio) audio.send({ cmd: 'config', damp: on });
+    syncPanel();
+    hudDirty = true;
+  }
+
+  window.addEventListener('keydown', function (e) {
+    if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== 'checkbox') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var k = e.key;
+    if (k >= '1' && k <= '4') setType(+k - 1);
+    else if (k === 'ArrowUp') setDepth(depth() + 1);
+    else if (k === 'ArrowDown') setDepth(depth() - 1);
+    else if (k === 'ArrowLeft' || k === 'ArrowRight') {
+      var step = (e.shiftKey ? 1 : 0.1) * (k === 'ArrowLeft' ? -1 : 1);
+      setGrowth(Math.round((state.G + step) * 1000) / 1000);
+    } else if (k === 'g' || k === 'G') startGrowth(growMin(), depth());
+    else if (k === 'c' || k === 'C') setColor(state.color + (e.shiftKey ? -1 : 1));
+    else if (k === 'a' || k === 'A') setSound(SOUNDS[(SOUNDS.indexOf(state.sound) + 1) % SOUNDS.length]);
+    else if (k === 'd' || k === 'D') setDamp(!state.damp);
+    else if (k === 'q' || k === 'Q') { state.quant = !state.quant; if (hear) sendSound(false); syncPanel(); }
+    else if (k === 'l' || k === 'L') { state.levels = !state.levels; syncPanel(); }
+    else if (k === 't' || k === 'T') { state.ghost = !state.ghost; syncPanel(); }
+    else if (k === 'h' || k === 'H' || k === '?') $('help').classList.toggle('show');
+    else if (k === 'Escape') $('help').classList.remove('show');
+    else if (k === 'r' || k === 'R') resetView();
+    else if (k === 's' || k === 'S') snapshot();
+    else if (k === 'f' || k === 'F' || k === 'F11') toggleFullscreen();
+    else if (k === ' ') stopSound();
+    else return;
+    e.preventDefault();
+  });
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+  }
+
+  function snapshot() {
+    var c = document.createElement('canvas');
+    c.width = ov.width;
+    c.height = ov.height;
+    var g = c.getContext('2d');
+    g.imageSmoothingEnabled = true;
+    g.drawImage(glCanvas, 0, 0, c.width, c.height);
+    g.drawImage(ov, 0, 0);
+    c.toBlob(function (blob) {
+      var a = document.createElement('a'), d = new Date();
+      var pad = function (n) { return String(n).padStart(2, '0'); };
+      a.download = 'kakeya_' + info().key + '_' + info().depthName + depth() + '_' +
+        d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.png';
+      a.href = URL.createObjectURL(blob);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+    });
+  }
+
+  // Pointer input: left button hears, middle/right/Shift-drag pans, right click stops, two
+  // fingers pinch.
+  var pointers = new Map(), drag = null, pendingHear = null;
+  glCanvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  glCanvas.addEventListener('pointerdown', function (e) {
+    glCanvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2) {
+      var pts = Array.from(pointers.values());
+      drag = { mode: 'pinch', d: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+               cx: (pts[0].x + pts[1].x) / 2, cy: (pts[0].y + pts[1].y) / 2 };
+      return;
+    }
+    if (pointers.size > 2) return;
+    if (e.button === 0 && !e.shiftKey) {
+      drag = { mode: 'hear' };
+      ensureAudio();
+      hearAt(e.clientX, e.clientY, true);
+    } else {
+      drag = { mode: 'pan', x: e.clientX, y: e.clientY, moved: 0, button: e.button };
+    }
+  });
+  glCanvas.addEventListener('pointermove', function (e) {
+    if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    var w = s2w(e.clientX, e.clientY), m = model();
+    cursor = { x: w[0], y: w[1], m: m.count(w[0], w[1]), sx: e.clientX, sy: e.clientY, slice: null };
+    cursorSliceDirty = true;
+    hudDirty = true;
+    if (!drag) return;
+    if (drag.mode === 'hear') {
+      pendingHear = [e.clientX, e.clientY];
+    } else if (drag.mode === 'pan') {
+      var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      drag.moved += Math.abs(dx) + Math.abs(dy);
+      cam.x -= dx / cam.zoom; dest.x -= dx / cam.zoom;
+      cam.y += dy / cam.zoom; dest.y += dy / cam.zoom;
+      frame = 0;
+    } else if (drag.mode === 'pinch' && pointers.size === 2) {
+      var pts = Array.from(pointers.values());
+      var d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      var cx = (pts[0].x + pts[1].x) / 2, cy = (pts[0].y + pts[1].y) / 2;
+      var before = s2w(drag.cx, drag.cy);
+      cam.zoom = dest.zoom = cam.zoom * d / Math.max(1, drag.d);
+      var after = s2w(cx, cy);
+      cam.x += before[0] - after[0]; dest.x = cam.x;
+      cam.y += before[1] - after[1]; dest.y = cam.y;
+      drag.d = d; drag.cx = cx; drag.cy = cy;
+      frame = 0;
+    }
+  });
+  function endPointer(e) {
+    pointers.delete(e.pointerId);
+    if (drag && drag.mode === 'pan' && drag.button === 2 && drag.moved < 4) stopSound();
+    if (pointers.size === 0) drag = null;
+  }
+  glCanvas.addEventListener('pointerup', endPointer);
+  glCanvas.addEventListener('pointercancel', endPointer);
+  glCanvas.addEventListener('pointerleave', function () { if (!drag) { cursor = null; hudDirty = true; } });
+  glCanvas.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var delta = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+    dest.zoom *= Math.pow(1.1, -delta / 100);
+    dest.zoom = Math.min(1e7, Math.max(20, dest.zoom));
+    focal.x = e.clientX;
+    focal.y = e.clientY;
+  }, { passive: false });
+  window.addEventListener('resize', function () { resize(); });
+
+  var cursorSliceDirty = false;
+
+  // ---------------------------------------------------------------------------------------------
+  // Main loop
+  // ---------------------------------------------------------------------------------------------
+  function tick(now) {
+    requestAnimationFrame(tick);
+    stepGrowth(now);
+    if (stepCamera(now)) frame = 0;
+    if (pendingHear) {
+      hearAt(pendingHear[0], pendingHear[1], true);
+      pendingHear = null;
+    }
+    if (cursorSliceDirty && cursor) {
+      cursorSliceDirty = false;
+      cursor.slice = sliceAt(cursor.y);
+      var w = s2w(cursor.sx, cursor.sy);
+      cursor.x = w[0];
+      cursor.y = w[1];
+    }
+    if (frame < MAX_FRAMES) renderSample();
+    runAreaJob();
+    drawOverlay();
+    updateHud(now);
+  }
+
+  function fatal(msg) {
+    var f = $('fatal');
+    f.textContent = msg;
+    f.style.display = 'flex';
+  }
+
+  resize();
+  resetView();
+  if (introGrowth && state.G >= depth()) {
+    state.G = growMin();
+    startGrowth(growMin(), depth());
+  }
+  paramsChanged(true);
+  requestAnimationFrame(tick);
+
+  // Hooks for the browser tests.
+  window.__kakeya = {
+    state: state, cam: cam, core: K,
+    view: function (x, y, zoom) { cam.x = dest.x = x; cam.y = dest.y = y; cam.zoom = dest.zoom = zoom; frame = 0; },
+    set: function (o) {
+      if ('type' in o) setType(o.type);
+      if ('depth' in o) setDepth(o.depth);
+      if ('G' in o) setGrowth(o.G);
+      if ('color' in o) setColor(o.color);
+      anim = null;
+    },
+    renderDebug: renderDebug,
+    frames: function () { return frame; },
+    hearWorld: function (x, y) {
+      var s = w2s(x, y);
+      hearAt(s[0], s[1], true);
+      return hear.needles.length;
+    },
+    area: function () { return areaJob && areaJob.done() ? areaJob.value() : null; },
+    audio: function () { return ensureAudio().then(function (a) { return a ? a.kind : null; }); },
+    orbitPoints: orbitPoints
+  };
+})();
+</script>
+</body>
+</html>
