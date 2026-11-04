@@ -145,6 +145,115 @@ test('needles reported through a point pass through it and are at least 1 long',
   }
 });
 
+// Distance travelled by the needle's two ends between two positions.
+const moved = (a, b) => Math.max(Math.hypot(a.tail[0] - b.tail[0], a.tail[1] - b.tail[1]),
+                                 Math.hypot(a.head[0] - b.head[0], a.head[1] - b.head[1]));
+
+test('Perron-tree needle set: the needle turns 360° continuously, inside a triangle whenever it pivots', () => {
+  for (const [p, reach] of [[3, 0.5], [5, 1.2], [6, 3], [8, 1.2]]) {
+    const path = K.needlePath(K.NEEDLE, p, p, reach), st = K.treeStage(p), N = 2 ** st.D;
+    assert.equal(path.triangles.length, 4 * N);
+    // every join's turn at L fits inside the next triangle's fan, and its far point is at least `reach` out
+    for (const j of path.joins) {
+      const next = path.triangles[j.to], width = next.a1 - next.a0;
+      assert.ok(j.a1 - j.a0 > 0 && j.a1 - j.a0 < width, `p=${p} join ${j.from}`);
+      assert.ok(j.reach >= reach - 1e-12);
+    }
+    // continuity: with a fine enough sampling of every phase, consecutive positions are close
+    for (const ph of path.phases) {
+      let prev = path.at(ph.t0 + 1e-12);
+      for (let i = 1; i <= 200; i++) {
+        const cur = path.at(ph.t0 + (ph.t1 - ph.t0) * i / 200 - 1e-12);
+        const span = ph.kind === 'slide' ? Math.hypot(ph.p1[0] - ph.p0[0], ph.p1[1] - ph.p0[1]) : Math.abs(ph.a1 - ph.a0);
+        assert.ok(moved(prev, cur) <= span / 200 * 1.01 + 1e-9, `p=${p} jump in ${ph.kind}`);
+        prev = cur;
+      }
+    }
+    // the turn covers exactly one revolution and the loop closes
+    const a = path.at(0), b = path.at(1 - 1e-13);
+    assert.ok(moved(a, b) < 1e-6, `p=${p} loop closes`);
+    assert.ok(Math.abs(b.turn - 1) < 1e-6);
+    // while pivoting at an apex, the needle lies in that triangle of its tree
+    for (const ph of path.phases.filter(q => q.tri !== undefined)) {
+      const T = path.triangles[ph.tri];
+      for (let i = 0; i <= 20; i++) {
+        const pos = path.at(ph.t0 + (ph.t1 - ph.t0) * i / 20);
+        for (let f = 0; f <= 1; f += 0.25) {
+          const x = pos.tail[0] + f * (pos.head[0] - pos.tail[0]), y = pos.tail[1] + f * (pos.head[1] - pos.tail[1]);
+          const l = K.quarterTurns(x, y, -T.side), tri = K.treeTriangle(st, T.index);
+          const u = l[1] * p, L = tri.x0 + tri.slope * u;
+          assert.ok(u >= -1e-9 && u <= p + 1e-9 && l[0] * p >= L - 1e-7 && l[0] * p <= L + K.treeLen(st, u) + 1e-7,
+            `p=${p} triangle ${ph.tri} needle point outside`);
+        }
+      }
+    }
+    assert.ok(path.joinArea > 0);
+  }
+  // pushing the joins further out shrinks the area they add
+  const near = K.needlePath(K.NEEDLE, 5, 5, 1).joinArea, far = K.needlePath(K.NEEDLE, 5, 5, 40).joinArea;
+  assert.ok(far < near / 5, `${near} -> ${far}`);
+});
+
+test('equilateral triangle and disc: the needle stays inside and turns once', () => {
+  for (const type of [K.EQUI, K.DISK]) {
+    const path = K.needlePath(type, 1, 1, 1), m = K.model(type, 1, 1);
+    let prev = path.at(0);
+    for (let i = 1; i <= 4000; i++) {
+      const s = i / 4000, pos = path.at(s % 1);
+      for (let f = 0; f <= 1; f += 0.125) {
+        const x = pos.tail[0] + f * (pos.head[0] - pos.tail[0]), y = pos.tail[1] + f * (pos.head[1] - pos.tail[1]);
+        const nx = x * (1 - 1e-9), ny = type === K.EQUI ? (y - 1 / 3) * (1 - 1e-9) + 1 / 3 : y * (1 - 1e-9);
+        assert.ok(m.contains(nx, ny), `type ${type} s=${s}`);
+      }
+      assert.ok(moved(prev, pos) < 0.01);
+      assert.ok(Math.abs(Math.hypot(pos.head[0] - pos.tail[0], pos.head[1] - pos.tail[1]) - 1) < 1e-9);
+      prev = pos;
+    }
+    assert.ok(Math.abs(path.at(1 - 1e-9).turn - 1) < 1e-6);
+  }
+});
+
+test('deltoid: tangent chords have length 1, and three of them pass through every inside point', () => {
+  const a = 0.25;
+  for (let i = 0; i < 400; i++) {
+    const t = 4 * Math.PI * i / 400, [P, Q] = K.deltoidChord(t);
+    assert.ok(Math.abs(Math.hypot(Q[0] - P[0], Q[1] - P[1]) - 1) < 1e-12, `t=${t}`);
+    assert.ok(Math.abs(K.deltoidF(...P)) < 1e-12 && Math.abs(K.deltoidF(...Q)) < 1e-12);
+    const u = [-Math.cos(t / 2), Math.sin(t / 2)];   // the chord lies along the tangent at t
+    assert.ok(Math.abs((Q[0] - P[0]) * u[1] - (Q[1] - P[1]) * u[0]) < 1e-12 && (Q[0] - P[0]) * u[0] + (Q[1] - P[1]) * u[1] > 0);
+  }
+  const m = K.model(K.DELTOID, 1, 1);
+  let checked = 0;
+  for (let i = 0; i < 3000 && checked < 300; i++) {
+    const x = (rand() * 2 - 1) * 3 * a, y = (rand() * 2 - 1) * 3 * a;
+    if (K.deltoidF(x, y) > -1e-4) continue;   // stay clear of the boundary
+    checked++;
+    const nd = m.needles(x, y);
+    assert.equal(nd.length, 3, `(${x}, ${y})`);
+    for (const n of nd) {
+      const vx = n.ax - n.bx, vy = n.ay - n.by;
+      assert.ok(Math.abs((x - n.bx) * vy - (y - n.by) * vx) < 1e-7);
+      const f = ((x - n.bx) * vx + (y - n.by) * vy) / (vx * vx + vy * vy);
+      assert.ok(f > -1e-9 && f < 1 + 1e-9);
+    }
+  }
+  assert.ok(checked >= 200);
+  // area π/8: Monte Carlo over the bounding box agrees
+  let hits = 0;
+  for (let i = 0; i < 200000; i++) if (m.contains((rand() * 2 - 1) * 0.75, (rand() * 2 - 1) * 0.75)) hits++;
+  assert.ok(Math.abs(hits / 200000 * 2.25 - Math.PI / 8) < 0.005);
+});
+
+test('equilateral triangle: the needles through a point are the corners within reach', () => {
+  const m = K.model(K.EQUI, 1, 1);
+  for (let i = 0; i < 2000; i++) {
+    const x = rand() * 1.2 - 0.6, y = rand();
+    const nd = m.needles(x, y);
+    assert.equal(nd.length, m.count(x, y));
+    if (m.contains(x, y)) assert.ok(nd.length >= 1);
+  }
+});
+
 // Fundamental frequency from the autocorrelation of one channel.
 function pitch(x, sr) {
   let best = 0, bestLag = 0;

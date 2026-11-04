@@ -16,9 +16,13 @@ or served; the page needs WebGL 2.
 | Key | Construction |
 | --- | --- |
 | 1 | **The Perron–Schoenberg tree Σp** (pp. 700–705). Start from the triangle Δ2, then p − 2 times bisect every triangle and expand both halves up to the next level. Σp is a union of n = 2^(p−2) triangles. Between them they contain a segment of length ≥ 1 in every direction of the original triangle Δ, whose area is 1. |
-| 2 | **The full square** (Fig. 4). One tree on each side of the square, leaning in to the centre, so every direction all the way round appears. Pál joins (Fig. 5), which make it a set in which a needle can turn, are not drawn; they add arbitrarily little area. |
+| 2 | **The full square** (Fig. 4). One tree on each side of the square, leaning in to the centre, so every direction all the way round appears. On its own this contains a needle in every direction, but a needle can't yet move from one triangle to the next; set 5 adds the joins that let it. |
 | 3 | **Kahane's version.** Every segment from a point of a Cantor set C on one line to a point of C/2 on a parallel line. This is the bridge to "ordinary" fractals; see below. |
 | 4 | **The triangle Δ with nothing slid**, for comparison: same triangles, same directions, area 1. |
+| 5 | **A Kakeya needle set built from Perron trees** (pp. 699–700). The square of four trees plus a Pál join between every pair of consecutive triangles, so a needle of length 1 can turn all the way round inside it. Press `N` to watch it turn. |
+| 6 | **The deltoid**, the three-cornered hypocycloid of p. 698. The needle turns with both ends on the curve. Area π/8, and Kakeya's guess for the smallest needle set. |
+| 7 | **The equilateral triangle of height 1** (p. 697). Area 1/√3, the smallest *convex* needle set (Pál, 1920). |
+| 8 | **The disc of diameter 1**, area π/4: spin the needle about its middle. |
 
 The growth slider (and `G`) moves continuously from Σ2 to Σp, which reproduces the paper's
 "growth of the Perron–Schoenberg tree":
@@ -33,6 +37,33 @@ Colour modes (`C`): needle direction; number of needles through each point (belo
 "paper" modes that draw every triangle (like Figs. 9–15) or only the outline (like Fig. 16).
 
 ![Needles per point for p = 14: the trunk is where the construction piles triangles on top of each other](images/multiplicity.jpg)
+
+### Needle sets: making the needle actually turn
+
+Kakeya's question is about *moving* a needle, not just containing one in every direction. Set 5
+is Besicovitch's answer, built as on pp. 699–700. Consecutive triangles in direction order share a
+direction (the right edge of one is parallel to the left edge of the next), but those edges sit on
+different parallel lines. A Pál join (Fig. 5) gets the needle across:
+
+1. it slides out along the first line to a far point L;
+2. it turns about L by the small angle that lines it up with the next triangle's apex;
+3. it slides back along that line into the next triangle, where it pivots about the apex as before.
+
+Sliding along its own line sweeps no area, so each join adds only the thin sector swept at L. The
+farther away L is, the thinner that sector. The join-reach slider (`[` and `]`) shows the
+trade-off, and the HUD reports the area the joins add. At p = 5 it is about 0.39 with joins
+reaching 10 units and about 0.04 at 100 units, roughly halving each time the reach doubles. The
+joins are the long coloured rays; each join's turn is checked to fit inside the next triangle's
+range of directions, so thinner triangles force longer joins.
+
+![The Perron-tree needle set for p = 5: the four trees, the Pál joins as long rays, and the needle (red) pivoting in a triangle of the right-hand tree](images/needle-set.jpg)
+
+![The classical needle sets with the needle part-way round](images/classic.jpg)
+
+While the needle turns, its pitch climbs three octaves over one full turn, and it is panned by
+direction. Clicking still plays the needles through a point. Every point inside the deltoid lies
+on exactly three needle positions; a point in the triangle lies on one for each corner within
+distance 1 (the three bright sectors); a point in the disc lies on one.
 
 ## Is there really a similarity with the fractal explorer?
 
@@ -113,7 +144,9 @@ somewhere.
 | Middle drag, right drag, Shift + drag | Pan |
 | Right click, Space | Stop the sound |
 | Scroll wheel | Zoom about the cursor |
-| 1–4 | Construction |
+| 1–8 | Construction |
+| N | Turn the needle (sets 5–8) |
+| [ / ] | Pál joins shorter / longer (set 5) |
 | ↑ / ↓ | p (depth m for Kahane) |
 | ← / → (Shift: bigger steps) | Scrub the growth stage |
 | G | Grow from Σ2 |
@@ -138,6 +171,8 @@ resolution; try `scale=0.5` on a slow GPU, `scale=2` for crisp snapshots on a hi
 - Colour by direction and compare Σp with mode 4. Every colour of Δ is still there, rearranged.
 - Zoom into the crown at p = 16 or more. The branch tips split like a Cantor set.
 - Kahane mode at depth 7–9: the area falls, but very slowly.
+- Set 5: press `N`, then `]` a few times while it turns. The joins reach farther and their area
+  shrinks, but the needle still gets round.
 
 ## Files and tests
 
@@ -149,11 +184,15 @@ resolution; try `scale=0.5` on a slow GPU, `scale=2` for crisp snapshots on a hi
   - the pruned tree walk against brute force;
   - the area and slice-length identity;
   - Kahane's direction set;
+  - that the turning needle moves continuously, closes after exactly one turn, and lies inside its
+    triangle whenever it pivots, and that each join's turn fits the next triangle;
+  - the deltoid's tangent chords (length exactly 1, three through every inside point);
   - that every reported needle passes through its point;
   - the synthesiser's pitch, dampening and silence behaviour.
 
   The shader was also checked against the JS geometry pixel by pixel in headless Chromium: 99.8–100%
-  of pixels agree, and the rest are float32 rounding on triangle edges.
+  of pixels agree for the trees (the rest are float32 rounding on triangle edges), and 100% for the
+  needle sets.
 
 ## References
 

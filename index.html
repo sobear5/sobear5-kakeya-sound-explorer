@@ -31,6 +31,8 @@
   #panel button { cursor: pointer; }
   #panel input[type=range] { flex: 1; min-width: 0; accent-color: #e04040; }
   #panel output { width: 34px; text-align: right; flex: none; }
+  #panel .off { opacity: 0.35; pointer-events: none; }
+  #panel .hidden { display: none !important; }
   #panel .row { display: flex; flex-wrap: wrap; gap: 0 12px; margin-top: 4px; }
   #panel .row label { display: flex; align-items: center; gap: 3px; }
   #legend { height: 7px; border-radius: 2px; margin: 6px 0 1px; }
@@ -63,14 +65,26 @@
         <option value="1">2 · Square: four trees</option>
         <option value="2">3 · Kahane: Cantor sets</option>
         <option value="3">4 · Triangle Δ, unslid</option>
+        <option value="4">5 · Needle set: trees + Pál joins</option>
+        <option value="5">6 · Deltoid</option>
+        <option value="6">7 · Equilateral triangle</option>
+        <option value="7">8 · Disc</option>
       </select>
     </label>
-    <label class="line"><span id="depthLabel">p</span>
+    <label class="line" id="depthRow"><span id="depthLabel">p</span>
       <input id="depth" type="range" min="2" max="20" step="1"><output id="depthOut"></output>
     </label>
-    <label class="line"><span>Growth</span>
+    <label class="line" id="growRow"><span>Growth</span>
       <input id="grow" type="range" min="0" max="1000" step="1"><button id="growBtn" title="Grow (G)">▶</button>
     </label>
+    <div id="needleRows">
+      <label class="line"><span>Needle</span>
+        <button id="turnBtn" title="Turn the needle (N)">▶ Turn the needle</button>
+      </label>
+      <label class="line" id="reachRow"><span>Join reach</span>
+        <input id="reach" type="range" min="0" max="1000" step="1" title="[ and ]"><output id="reachOut"></output>
+      </label>
+    </div>
     <label class="line"><span>Colour</span>
       <select id="color">
         <option value="0">Needle direction</option>
@@ -105,7 +119,7 @@
 var KakeyaCore = (function () {
   'use strict';
 
-  var TREE = 0, SQUARE = 1, KAHANE = 2, TRIANGLE = 3;
+  var TREE = 0, SQUARE = 1, KAHANE = 2, TRIANGLE = 3, NEEDLE = 4, DELTOID = 5, EQUI = 6, DISK = 7;
 
   var TYPES = [
     { id: TREE, key: 'tree', name: 'Perron–Schoenberg tree', depthName: 'p',
@@ -115,7 +129,15 @@ var KakeyaCore = (function () {
     { id: KAHANE, key: 'kahane', name: "Kahane's Cantor-set construction", depthName: 'm',
       depthMin: 0, depthMax: 9, depthDefault: 5, growMin: 0 },
     { id: TRIANGLE, key: 'triangle', name: 'Original triangle Δ, nothing slid', depthName: 'p',
-      depthMin: 2, depthMax: 20, depthDefault: 10, growMin: 2 }
+      depthMin: 2, depthMax: 20, depthDefault: 10, growMin: 2 },
+    { id: NEEDLE, key: 'needle', name: 'Needle set: Perron trees joined by Pál joins', depthName: 'p',
+      depthMin: 2, depthMax: 12, depthDefault: 5, growMin: 2, needle: true },
+    { id: DELTOID, key: 'deltoid', name: 'Deltoid (three-cornered hypocycloid)', depthName: '',
+      depthMin: 1, depthMax: 1, depthDefault: 1, growMin: 1, needle: true, fixed: true },
+    { id: EQUI, key: 'equilateral', name: 'Equilateral triangle of height 1', depthName: '',
+      depthMin: 1, depthMax: 1, depthDefault: 1, growMin: 1, needle: true, fixed: true },
+    { id: DISK, key: 'disc', name: 'Disc of diameter 1', depthName: '',
+      depthMin: 1, depthMax: 1, depthDefault: 1, growMin: 1, needle: true, fixed: true }
   ];
 
   // ---------------------------------------------------------------------------------------------
@@ -442,11 +464,263 @@ var KakeyaCore = (function () {
     };
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // Needle sets: sets inside which a unit needle can turn all the way round.
+  //
+  // The Perron-tree needle set follows pp. 699-700 of the paper. The four trees of the square
+  // contain a needle in every direction, and a Pál join between each pair of consecutive triangles
+  // lets the needle get from one to the next. Triangles k and k+1 share a direction e (the right
+  // edge of k is parallel to the left edge of k+1), but the two edges lie on different parallel
+  // lines. The needle slides along the first line to a point L far away, turns about L by a small
+  // angle until it lines up with the apex of triangle k+1, and slides back along that line into
+  // triangle k+1. Sliding sweeps no area, so the join adds only the thin sector swept at L, and that
+  // shrinks as L moves away. The disc, the equilateral triangle of height 1 and the deltoid are the
+  // classical needle sets the paper starts from (pp. 697-698).
+  // ---------------------------------------------------------------------------------------------
+
+  var DELTOID_A = 0.25;   // rolling-circle radius; the deltoid's tangent chords then have length 4a = 1
+  var EQ_V = [[-1 / Math.sqrt(3), 0], [1 / Math.sqrt(3), 0], [0, 1]];
+  var EQ_SIDE = 2 / Math.sqrt(3);
+
+  function dir(a) { return [Math.cos(a), Math.sin(a)]; }
+
+  function deltoidF(x, y) {
+    var a = DELTOID_A, r2 = x * x + y * y;
+    return r2 * r2 + 18 * a * a * r2 - 27 * a * a * a * a - 8 * a * (x * x * x - 3 * x * y * y);
+  }
+  function deltoidPoint(t) {
+    var a = DELTOID_A;
+    return [2 * a * Math.cos(t) + a * Math.cos(2 * t), 2 * a * Math.sin(t) - a * Math.sin(2 * t)];
+  }
+  // Direction of the tangent at parameter t. It turns half as fast as t and stays smooth through
+  // the cusps, so t from 0 to 4π turns the needle once.
+  function deltoidTangent(t) { return [-Math.cos(t / 2), Math.sin(t / 2)]; }
+
+  // The tangent line at parameter t meets the deltoid again at parameters -t/2 and π - t/2, and the
+  // chord between them has length exactly 4a = 1. Returns its ends [tail, head], ordered along the
+  // tangent direction.
+  function deltoidChord(t) {
+    return [deltoidPoint(-t / 2), deltoidPoint(Math.PI - t / 2)];
+  }
+
+  function inEqui(x, y) {
+    return y >= 0 && y <= 1 && Math.abs(x) <= (1 - y) / Math.sqrt(3);
+  }
+
+  // Needle positions that sweep area, through a point of a classical needle set: the diameter
+  // through it (disc); the needle pivoting at each corner within reach (triangle); the three
+  // tangent chords through it (deltoid).
+  function classicNeedles(type, x, y) {
+    var out = [];
+    var push = function (t, h, key) {
+      var a = Math.atan2(h[1] - t[1], h[0] - t[0]);
+      out.push({ ax: h[0], ay: h[1], bx: t[0], by: t[1], u: ((a % Math.PI) + Math.PI) % Math.PI / Math.PI, key: key });
+    };
+    if (type === DISK) {
+      if (x * x + y * y > 0.25) return out;
+      var r = Math.hypot(x, y), d = r > 1e-12 ? [x / r, y / r] : [1, 0];
+      push([-d[0] / 2, -d[1] / 2], [d[0] / 2, d[1] / 2], 0);
+    } else if (type === EQUI) {
+      if (!inEqui(x, y)) return out;
+      for (var i = 0; i < 3; i++) {
+        var V = EQ_V[i], dx = x - V[0], dy = y - V[1], L = Math.hypot(dx, dy);
+        if (L > 1) continue;
+        var e = L > 1e-12 ? [dx / L, dy / L] : dir(Math.PI / 3 + 2 * Math.PI * i / 3);
+        push(V, [V[0] + e[0], V[1] + e[1]], i);
+      }
+    } else if (type === DELTOID) {
+      if (deltoidF(x, y) > 0) return out;
+      var h = function (t) {
+        var P = deltoidPoint(t), u = deltoidTangent(t);
+        return (x - P[0]) * u[1] - (y - P[1]) * u[0];
+      };
+      // Lines at t and t + 2π are the same, so scan the whole of [0, 2π] and drop a root found at
+      // both ends of it.
+      var n = 720, t0 = 0, h0 = h(0), roots = [];
+      for (var k = 1; k <= n; k++) {
+        var t1 = 2 * Math.PI * k / n, h1 = h(t1);
+        if ((h0 <= 0) !== (h1 <= 0)) {
+          var a = t0, b = t1, fa = h0;
+          for (var j = 0; j < 50; j++) {
+            var m = (a + b) / 2, fm = h(m);
+            if ((fa <= 0) === (fm <= 0)) { a = m; fa = fm; } else b = m;
+          }
+          var r0 = ((a + b) / 2) % (2 * Math.PI), dup = false;
+          for (var q = 0; q < roots.length; q++) {
+            var dd = Math.abs(roots[q] - r0);
+            if (Math.min(dd, 2 * Math.PI - dd) < 1e-9) dup = true;
+          }
+          if (!dup) roots.push(r0);
+        }
+        t0 = t1;
+        h0 = h1;
+      }
+      for (q = 0; q < roots.length; q++) {
+        var c = deltoidChord(roots[q]);
+        push(c[0], c[1], Math.round(roots[q] * 1e6));
+      }
+    }
+    return out;
+  }
+
+  function classicModel(type) {
+    var area = type === DISK ? Math.PI / 4 : type === EQUI ? 1 / Math.sqrt(3) : Math.PI / 8;
+    var inside = type === DISK ? function (x, y) { return x * x + y * y <= 0.25; }
+      : type === EQUI ? inEqui : function (x, y) { return deltoidF(x, y) <= 0; };
+    return {
+      type: type, depth: 1, G: 1, pieces: 0,
+      // Number of area-sweeping needle positions through the point (the shader computes the same).
+      count: function (x, y) {
+        if (!inside(x, y)) return 0;
+        if (type === DISK) return 1;
+        if (type === DELTOID) return 3;
+        var n = 0;
+        for (var i = 0; i < 3; i++) if (Math.hypot(x - EQ_V[i][0], y - EQ_V[i][1]) <= 1) n++;
+        return n;
+      },
+      contains: inside,
+      needles: function (x, y) { return classicNeedles(type, x, y); },
+      areaJob: function () {
+        return { exact: true, step: function () { return true; }, done: function () { return true; },
+                 value: function () { return area; }, error: function () { return 0; },
+                 progress: function () { return 1; } };
+      }
+    };
+  }
+
+  // A needle path is a list of phases: 'rot' turns the needle about a pivot that is its tail or its
+  // head, 'slide' moves it along its own line. at(s), s in [0, 1), gives tail, head, angle and turn
+  // (the fraction of a full turn made so far).
+  function evalPhase(ph, t, len) {
+    if (ph.kind === 'slide') {
+      return { tail: [ph.p0[0] + t * (ph.p1[0] - ph.p0[0]), ph.p0[1] + t * (ph.p1[1] - ph.p0[1])], a: ph.a };
+    }
+    var a = ph.a0 + (ph.a1 - ph.a0) * t, d = dir(a);
+    return { tail: ph.tailPivot ? ph.pivot : [ph.pivot[0] - len * d[0], ph.pivot[1] - len * d[1]], a: a };
+  }
+  function phasePath(phases, len, a0, sense, extra) {
+    var total = 0, i;
+    for (i = 0; i < phases.length; i++) { phases[i].t0 = total; total += phases[i].w; }
+    for (i = 0; i < phases.length; i++) {
+      phases[i].t0 /= total;
+      phases[i].t1 = i + 1 < phases.length ? phases[i + 1].t0 / total : 1;
+    }
+    var path = {
+      phases: phases, length: len,
+      at: function (s) {
+        s = ((s % 1) + 1) % 1;
+        var lo = 0, hi = phases.length - 1;
+        while (lo < hi) {
+          var mid = (lo + hi + 1) >> 1;
+          if (phases[mid].t0 <= s) lo = mid; else hi = mid - 1;
+        }
+        var ph = phases[lo], t = (s - ph.t0) / Math.max(1e-12, ph.t1 - ph.t0);
+        var r = evalPhase(ph, Math.min(1, t), len), d = dir(r.a);
+        return { tail: r.tail, head: [r.tail[0] + len * d[0], r.tail[1] + len * d[1]], angle: r.a,
+                 turn: sense * (r.a - a0) / (2 * Math.PI), pivot: ph.kind === 'rot' ? ph.pivot : null, phase: ph };
+      }
+    };
+    for (var k in extra) path[k] = extra[k];
+    return path;
+  }
+
+  // The Perron-tree needle set: 4n triangles in direction order, each followed by a Pál join to the
+  // next (the last one closes the loop). reach is the shortest distance to a join's far point L;
+  // a join is pushed further out when its turn at L would not fit inside the next triangle's fan.
+  function treeNeedlePath(p, G, reach) {
+    var st = treeStage(G), N = Math.pow(2, st.D), H = st.G / p, tris = [], r, i, k;
+    for (r = 0; r < 4; r++) {
+      for (i = 0; i < N; i++) {
+        var tr = treeTriangle(st, i);
+        tris.push({
+          apex: quarterTurns(tr.apex / p, H, r),
+          a0: Math.atan2(-1, 2 * i / N - 1) + r * Math.PI / 2,
+          a1: Math.atan2(-1, 2 * (i + 1) / N - 1) + r * Math.PI / 2,
+          side: r, index: i
+        });
+      }
+    }
+    var M = tris.length, joins = [], enter = new Array(M), steps = [];
+    for (k = 0; k < M; k++) {
+      var T = tris[k], nk = (k + 1) % M, Tn = tris[nk], wrap = nk === 0 ? 2 * Math.PI : 0;
+      var ae = T.a1, e = dir(ae), nrm = [-e[1], e[0]];
+      var D = [Tn.apex[0] - T.apex[0], Tn.apex[1] - T.apex[1]];
+      var delta = D[0] * nrm[0] + D[1] * nrm[1], along = D[0] * e[0] + D[1] * e[1];
+      var width = Tn.a1 - Tn.a0;
+      if (Math.abs(delta) < 1e-12) {
+        steps.push([{ kind: 'slide', p0: T.apex, p1: Tn.apex, a: ae, w: 0.45 }]);
+        enter[nk] = ae - wrap;
+        continue;
+      }
+      var behind = delta > 0, need = Math.abs(delta) / Math.tan(0.85 * width);
+      var R = Math.max(reach, behind ? need - along : need + along, behind ? 0 : 1.05 * H);
+      var L = behind ? [T.apex[0] - R * e[0], T.apex[1] - R * e[1]] : [T.apex[0] + R * e[0], T.apex[1] + R * e[1]];
+      var v = behind ? [Tn.apex[0] - L[0], Tn.apex[1] - L[1]] : [L[0] - Tn.apex[0], L[1] - Tn.apex[1]];
+      var turnAt = Math.atan2(e[0] * v[1] - e[1] * v[0], e[0] * v[0] + e[1] * v[1]);
+      var a2 = ae + turnAt, d2 = dir(a2);
+      var tailAfterSlide = behind ? L : [L[0] - H * e[0], L[1] - H * e[1]];
+      var tailAfterTurn = behind ? L : [L[0] - H * d2[0], L[1] - H * d2[1]];
+      steps.push([
+        { kind: 'slide', p0: T.apex, p1: tailAfterSlide, a: ae, w: 0.18 },
+        { kind: 'rot', pivot: L, tailPivot: behind, a0: ae, a1: a2, w: 0.09 },
+        { kind: 'slide', p0: tailAfterTurn, p1: Tn.apex, a: a2, w: 0.18 }
+      ]);
+      joins.push({ from: k, to: nk, L: L, a: T.apex, b: Tn.apex, a0: ae, a1: a2, reach: R, behind: behind,
+                   area: H * H * turnAt / 2, u: nk / M });
+      enter[nk] = a2 - wrap;
+    }
+    var phases = [];
+    for (k = 0; k < M; k++) {
+      phases.push({ kind: 'rot', pivot: tris[k].apex, tailPivot: true, a0: enter[k], a1: tris[k].a1, w: 0.55, tri: k });
+      for (var j = 0; j < steps[k].length; j++) phases.push(steps[k][j]);
+    }
+    var joinArea = 0, longest = 0;
+    for (k = 0; k < joins.length; k++) { joinArea += joins[k].area; longest = Math.max(longest, joins[k].reach); }
+    return phasePath(phases, H, enter[0], 1, { triangles: tris, joins: joins, joinArea: joinArea, longest: longest, stage: st });
+  }
+
+  // Equilateral triangle of height 1 (p. 697): turn 60° about a corner, slide along a side until
+  // the other end reaches the next corner, turn about that one, and so on. Six rounds turn it 360°.
+  function equiPath() {
+    var phases = [], tail = EQ_V[0], ang = Math.PI / 3;
+    for (var k = 0; k < 6; k++) {
+      var V = EQ_V[k % 3], Vn = EQ_V[(k + 1) % 3], tailPivot = k % 2 === 0;
+      phases.push({ kind: 'rot', pivot: V, tailPivot: tailPivot, a0: ang, a1: ang - Math.PI / 3, w: 3 });
+      ang -= Math.PI / 3;
+      tail = tailPivot ? V : [V[0] - Math.cos(ang), V[1] - Math.sin(ang)];
+      var s = (EQ_SIDE - 1) / EQ_SIDE, v = [(Vn[0] - V[0]) * s, (Vn[1] - V[1]) * s];
+      phases.push({ kind: 'slide', p0: tail, p1: [tail[0] + v[0], tail[1] + v[1]], a: ang, w: 1 });
+      tail = [tail[0] + v[0], tail[1] + v[1]];
+    }
+    return phasePath(phases, 1, Math.PI / 3, -1, {});
+  }
+
+  function needlePath(type, depth, G, reach) {
+    if (type === NEEDLE) return treeNeedlePath(depth, Math.min(depth, Math.max(2, G)), reach);
+    if (type === EQUI) return equiPath();
+    if (type === DISK) {
+      return { length: 1, at: function (s) {
+        var a = 2 * Math.PI * (((s % 1) + 1) % 1), d = dir(a);
+        return { tail: [-d[0] / 2, -d[1] / 2], head: [d[0] / 2, d[1] / 2], angle: a, turn: a / (2 * Math.PI), pivot: [0, 0] };
+      } };
+    }
+    if (type === DELTOID) {
+      return { length: 1, at: function (s) {
+        s = ((s % 1) + 1) % 1;
+        var t = 4 * Math.PI * s, c = deltoidChord(t);
+        return { tail: c[0], head: c[1], angle: Math.PI - t / 2, turn: s, pivot: deltoidPoint(t) };
+      } };
+    }
+    return null;
+  }
+
   function model(type, depth, G) {
     var info = TYPES[type];
     G = Math.min(depth, Math.max(info.growMin, G));
 
-    if (type === TREE || type === SQUARE) {
+    if (type === DELTOID || type === EQUI || type === DISK) return classicModel(type);
+
+    if (type === TREE || type === SQUARE || type === NEEDLE) {
       var p = depth, st = treeStage(G), counter = treeCounter(st), N = Math.pow(2, st.D);
       var sides = type === TREE ? [0] : [0, 1, 2, 3];
       var treeNeedles = function (x, y, r, out, max) {
@@ -548,6 +822,8 @@ var KakeyaCore = (function () {
 
   return {
     TREE: TREE, SQUARE: SQUARE, KAHANE: KAHANE, TRIANGLE: TRIANGLE, TYPES: TYPES,
+    NEEDLE: NEEDLE, DELTOID: DELTOID, EQUI: EQUI, DISK: DISK, EQ_V: EQ_V,
+    needlePath: needlePath, deltoidF: deltoidF, deltoidChord: deltoidChord, deltoidPoint: deltoidPoint,
     treeStage: treeStage, treeWeight: treeWeight, treeLen: treeLen, treeTriangle: treeTriangle,
     treeQuery: treeQuery, treeCounter: treeCounter, treeSlice: treeSlice,
     kahaneStage: kahaneStage, kahaneQuery: kahaneQuery, kahaneCounter: kahaneCounter,
@@ -741,6 +1017,10 @@ precision highp int;
 #define TYPE_SQUARE 1
 #define TYPE_KAHANE 2
 #define TYPE_TRIANGLE 3
+#define TYPE_NEEDLE 4
+#define TYPE_DELTOID 5
+#define TYPE_EQUI 6
+#define TYPE_DISK 7
 
 #define COLOR_DIRECTION 0
 #define COLOR_MULTIPLICITY 1
@@ -940,6 +1220,35 @@ void triangleFan(vec2 P, float G, float pxs, inout Acc acc) {
   }
 }
 
+// The classical needle sets: the disc of diameter 1, the equilateral triangle of height 1, and the
+// deltoid whose tangent chords have length 1. m counts the needle positions through the point that
+// sweep area: 1 in the disc, the corners within distance 1 in the triangle, 3 in the deltoid.
+void classic(vec2 q, float pxs, inout Acc acc) {
+  float d;   // signed distance to the boundary, negative inside (first order for the deltoid)
+  float m = 1.0;
+  if (iType == TYPE_DISK) {
+    d = length(q) - 0.5;
+  } else if (iType == TYPE_EQUI) {
+    float s3 = sqrt(3.0);
+    d = max(-q.y, max(0.5 * (q.y - 1.0 + s3 * q.x), 0.5 * (q.y - 1.0 - s3 * q.x)));
+    m = step(length(q - vec2(-1.0 / s3, 0.0)), 1.0) + step(length(q - vec2(1.0 / s3, 0.0)), 1.0)
+      + step(length(q - vec2(0.0, 1.0)), 1.0);
+  } else {
+    float a = 0.25, r2 = dot(q, q);
+    float f = r2 * r2 + 18.0 * a * a * r2 - 27.0 * a * a * a * a - 8.0 * a * (q.x * q.x * q.x - 3.0 * q.x * q.y * q.y);
+    vec2 g = vec2(4.0 * q.x * r2 + 36.0 * a * a * q.x - 24.0 * a * (q.x * q.x - q.y * q.y),
+                  4.0 * q.y * r2 + 36.0 * a * a * q.y + 48.0 * a * q.x * q.y);
+    d = f / max(length(g), 1e-4);
+    m = 3.0;
+  }
+  if (d <= 0.0) {
+    acc.m += m;
+    acc.col += m * vec3(0.33, 0.47, 0.80);
+    if (d < -1.25 * pxs) acc.deep += 1.0;
+  }
+  acc.edge = min(acc.edge, abs(d) / pxs);
+}
+
 void main() {
   vec2 jit = vec2(0.5);
   if (iTime > 0 && iDebug == 0) jit = fract(vec2(0.5) + float(iTime) * vec2(0.7548776662, 0.5698402910));
@@ -951,7 +1260,7 @@ void main() {
   float pxs = 1.0 / iZoom;
   if (iType == TYPE_TREE) {
     tree(q.x * p, q.y * p, iGrow, -1, pxs * p, acc);
-  } else if (iType == TYPE_SQUARE) {
+  } else if (iType == TYPE_SQUARE || iType == TYPE_NEEDLE) {
     vec2 d = q - vec2(0.0, 1.0);
     for (int side = 0; side < 4; ++side) {
       tree(d.x * p, (d.y + 1.0) * p, iGrow, side, pxs * p, acc);
@@ -959,8 +1268,10 @@ void main() {
     }
   } else if (iType == TYPE_KAHANE) {
     kahane(q, iGrow, pxs, acc);
-  } else {
+  } else if (iType == TYPE_TRIANGLE) {
     triangleFan(q * p, iGrow, pxs * p, acc);
+  } else {
+    classic(q, pxs, acc);
   }
 
   if (iDebug != 0) {
@@ -1015,7 +1326,11 @@ void main() {
     [-1.08, -0.06, 1.08, 1.07],
     [-1.08, -0.08, 1.08, 2.08],
     [-0.14, -0.08, 1.14, 1.08],
-    [-1.08, -0.06, 1.08, 1.07]
+    [-1.08, -0.06, 1.08, 1.07],
+    [-2.6, -1.6, 2.6, 3.6],
+    [-0.5, -0.72, 0.86, 0.72],
+    [-0.72, -0.1, 0.72, 1.1],
+    [-0.62, -0.62, 0.62, 0.62]
   ];
   var COLOR_COUNT = 4;
   var SOUNDS = ['orbit', 'chord', 'off'];
@@ -1029,12 +1344,14 @@ void main() {
     damp: false,
     quant: false,
     levels: true,
-    ghost: true
+    ghost: true,
+    reach: 10       // shortest distance from a Pál join's far point to its triangle
   };
 
   var qs = new URLSearchParams(location.search);
   var introGrowth = !qs.has('grow') && !(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
-  if (qs.has('type')) state.type = clampInt(+qs.get('type'), 0, 3);
+  if (qs.has('type')) state.type = clampInt(+qs.get('type'), 0, TYPES.length - 1);
+  if (qs.has('reach')) state.reach = Math.min(1000, Math.max(1, +qs.get('reach') || 10));
   if (qs.has('p')) {
     var t0 = TYPES[state.type];
     state.depth[state.type] = clampInt(+qs.get('p'), t0.depthMin, t0.depthMax);
@@ -1140,6 +1457,8 @@ void main() {
     if (state.type === K.TREE) return 2 * p;
     if (state.type === K.SQUARE) return 2 * p + 4;
     if (state.type === K.KAHANE) return 4 + 2 * p;
+    if (state.type === K.NEEDLE) return 2 * p + 4;
+    if (TYPES[state.type].fixed) return 3;
     return 2;
   }
 
@@ -1259,6 +1578,57 @@ void main() {
       mdlKey = key;
     }
     return mdl;
+  }
+
+  // The path a needle takes to turn round inside the current set (needle-set types only).
+  var npath = null, npathKey = '';
+  function needlePath() {
+    if (!info().needle) return null;
+    var key = state.type + ':' + depth() + ':' + state.G + ':' + state.reach;
+    if (key !== npathKey) {
+      npath = K.needlePath(state.type, depth(), state.G, state.reach);
+      npathKey = key;
+    }
+    return npath;
+  }
+
+  // The turning needle: one full turn per period, pitch climbing three octaves over the turn.
+  var turning = null;
+  function turnPeriod() {
+    var path = needlePath();
+    if (state.type === K.NEEDLE) return Math.min(120, Math.max(8, 0.5 * path.triangles.length));
+    return state.type === K.DISK ? 6 : 10;
+  }
+  function startTurning() {
+    if (!needlePath()) return;
+    stopSound();
+    turning = { t0: null, pos: null, sounding: false };
+    ensureAudio();
+    syncPanel();
+  }
+  function stopTurning() {
+    if (!turning) return;
+    if (turning.sounding && audio) audio.send({ cmd: 'stop' });
+    turning = null;
+    syncPanel();
+  }
+  function stepTurning(now) {
+    if (!turning) return;
+    var path = needlePath();
+    if (!path) { stopTurning(); return; }
+    if (turning.t0 === null) turning.t0 = now;
+    var s = turning.hold !== undefined ? turning.hold : ((now - turning.t0) / 1000 / turnPeriod()) % 1;
+    turning.pos = path.at(s);
+    if (state.sound !== 'off') {
+      var u = ((turning.pos.turn % 1) + 1) % 1;
+      send({ cmd: 'chord', reset: !turning.sounding,
+             voices: [{ key: 'needle', freq: pitchOf(u), pan: Math.cos(turning.pos.angle) }] });
+      turning.sounding = true;
+    } else if (turning.sounding) {
+      send({ cmd: 'stop' });
+      turning.sounding = false;
+    }
+    hudDirty = true;
   }
 
   var areaJob = null, areaKey = '';
@@ -1490,16 +1860,40 @@ void main() {
       ctx.setLineDash([5, 4]);
       if (state.type === K.TREE || state.type === K.TRIANGLE) {
         poly([[-1, 0], [1, 0], [0, 1]], true);
-      } else if (state.type === K.SQUARE) {
+      } else if (state.type === K.SQUARE || state.type === K.NEEDLE) {
         poly([[-1, 0], [1, 0], [1, 2], [-1, 2]], true);
         ctx.beginPath();
         line(-1, 0, 1, 2);
         line(1, 0, -1, 2);
         ctx.stroke();
-      } else {
+      } else if (state.type === K.KAHANE) {
         poly([[0, 0], [1, 0], [0.5, 1], [0, 1]], true);
       }
       ctx.setLineDash([]);
+    }
+
+    if (state.type === K.NEEDLE) drawJoins(paper);
+    if (turning && turning.pos) {
+      var tp = turning.pos;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = paper ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      line(tp.tail[0], tp.tail[1], tp.head[0], tp.head[1]);
+      ctx.stroke();
+      ctx.strokeStyle = '#ff3030';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      line(tp.tail[0], tp.tail[1], tp.head[0], tp.head[1]);
+      ctx.stroke();
+      ctx.lineCap = 'butt';
+      if (tp.pivot) {
+        var pv = w2s(tp.pivot[0], tp.pivot[1]);
+        ctx.fillStyle = '#ff3030';
+        ctx.beginPath();
+        ctx.arc(pv[0], pv[1], 3.5, 0, 2 * Math.PI);
+        ctx.fill();
+      }
     }
 
     if (hear) {
@@ -1515,6 +1909,30 @@ void main() {
       ctx.beginPath();
       ctx.arc(c[0], c[1], 4, 0, 2 * Math.PI);
       ctx.stroke();
+    }
+  }
+
+  // Pál joins: the two long lines the needle slides along, and the thin sector it sweeps at the far
+  // point L, which is the only area a join adds.
+  function drawJoins(paper) {
+    var path = needlePath();
+    if (!path) return;
+    var J = path.joins, H = path.length, alpha = Math.min(0.7, Math.max(0.18, 6 / Math.sqrt(J.length)));
+    for (var i = 0; i < J.length; i++) {
+      var j = J[i], col = sinebowCss(j.u), rgba = col.replace('rgb(', 'rgba(').replace(')', ',');
+      ctx.strokeStyle = paper ? 'rgba(30,30,40,' + alpha + ')' : rgba + alpha + ')';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      line(j.a[0], j.a[1], j.L[0], j.L[1]);
+      line(j.L[0], j.L[1], j.b[0], j.b[1]);
+      ctx.stroke();
+      var c = w2s(j.L[0], j.L[1]), flip = j.behind ? 0 : Math.PI;
+      ctx.fillStyle = paper ? 'rgba(30,30,40,0.35)' : rgba + '0.45)';
+      ctx.beginPath();
+      ctx.moveTo(c[0], c[1]);
+      ctx.arc(c[0], c[1], H * cam.zoom, -(j.a1 + flip), -(j.a0 + flip));
+      ctx.closePath();
+      ctx.fill();
     }
   }
 
@@ -1540,9 +1958,19 @@ void main() {
     } else if (state.type === K.KAHANE) {
       lines.push("Kahane's set: segments from C to C/2  ·  depth m = " + p + '  ·  4^m = ' +
         Math.pow(4, p).toLocaleString() + ' trapezoids' + (G < p - 1e-9 ? '  ·  depth ' + fmt(G, 2) : ''));
-    } else {
+    } else if (state.type === K.TRIANGLE) {
       lines.push('Triangle Δ, nothing slid  ·  p = ' + p + '  ·  ' + Math.pow(2, p - 2).toLocaleString() +
         ' elementary triangles' + stageText);
+    } else if (state.type === K.NEEDLE) {
+      var n4 = 4 * Math.pow(2, p - 2);
+      lines.push('Needle set: four Perron trees joined by Pál joins  ·  p = ' + p + '  ·  ' +
+        n4.toLocaleString() + ' triangles, ' + n4.toLocaleString() + ' joins' + stageText);
+    } else if (state.type === K.DELTOID) {
+      lines.push("Deltoid: a needle turns with both ends on the curve  ·  Kakeya's guess for the smallest needle set");
+    } else if (state.type === K.EQUI) {
+      lines.push('Equilateral triangle of height 1  ·  the smallest convex needle set (Pál, 1920)');
+    } else {
+      lines.push('Disc of diameter 1  ·  the obvious needle set: spin the needle about its middle');
     }
 
     // No estimate is kept while the growth animation runs; it starts again when the stage settles.
@@ -1558,6 +1986,17 @@ void main() {
       areaStr += '   <span class="k">the square has area 4</span>';
     } else if (state.type === K.KAHANE) {
       areaStr += '   <span class="k">→ 0 as m → ∞, slowly</span>';
+    } else if (state.type === K.NEEDLE) {
+      var np = needlePath();
+      areaStr = '<span class="k">area of the trees</span> ' + areaStr.replace('<span class="k">area</span> ', '') +
+        '   <span class="k">the joins add</span> ' + fmt(np.joinArea) +
+        ' <span class="k">(farthest reaches ' + fmt(np.longest, 1) + '; longer joins, less area)</span>';
+    } else if (state.type === K.DELTOID) {
+      areaStr += ' <span class="k">= π/8, half the disc</span>';
+    } else if (state.type === K.EQUI) {
+      areaStr += ' <span class="k">= 1/√3</span>';
+    } else if (state.type === K.DISK) {
+      areaStr += ' <span class="k">= π/4</span>';
     }
     lines.push(areaStr);
 
@@ -1571,9 +2010,13 @@ void main() {
     }
 
     var snd = '<span class="k">sound</span> ';
-    if (state.sound === 'off') snd += 'off';
+    if (turning && turning.pos) {
+      snd += (state.sound === 'off' ? 'off' : 'the turning needle: pitch climbs three octaves over one full turn') +
+        '   <span class="k">turned ' + fmt(100 * (((turning.pos.turn % 1) + 1) % 1), 0) + '% · N stops</span>';
+    } else if (state.sound === 'off') snd += 'off';
     else if (audioFailed) snd += '<span class="warn">audio unavailable in this browser</span>';
-    else if (!hear) snd += (state.sound === 'orbit' ? 'orbit' : 'chord') + ' · click a point to hear it';
+    else if (!hear) snd += (state.sound === 'orbit' ? 'orbit' : 'chord') + ' · click a point to hear it' +
+      (info().needle ? ', or press N to turn the needle' : '');
     else if (!hear.needles.length) snd += 'silent: no needle passes through this point (like an orbit that escapes)';
     else if (state.sound === 'orbit') {
       var mm = Math.min(hear.needles.length, 1024);
@@ -1593,10 +2036,15 @@ void main() {
   }
   function updateLegend() {
     var stops = [], lo = '', mid = '', hi = '';
-    if (state.color === 0) {
-      var cyclic = state.type === K.SQUARE;
+    if (info().fixed && state.color < 2) {
+      stops = ['#3b4f84', '#6f8fd2'];
+      lo = state.type === K.EQUI ? '1 needle' : '';
+      mid = state.type === K.EQUI ? 'brighter where more corners are in reach' : 'needle set';
+      hi = state.type === K.EQUI ? '3' : '';
+    } else if (state.color === 0) {
+      var cyclic = state.type === K.SQUARE || state.type === K.NEEDLE;
       for (var i = 0; i <= 16; i++) stops.push(sinebowCss((cyclic ? 1 : 0.85) * i / 16));
-      if (state.type === K.SQUARE) { lo = '225°'; mid = 'needle direction, all the way round'; hi = '225°'; }
+      if (cyclic) { lo = '225°'; mid = 'needle direction, all the way round'; hi = '225°'; }
       else if (state.type === K.KAHANE) { lo = 'run −1'; mid = 'needle direction'; hi = 'run +1/2'; }
       else { lo = '↙ 45° left'; mid = 'needle direction'; hi = '45° right ↘'; }
     } else if (state.color === 1) {
@@ -1620,12 +2068,15 @@ void main() {
     '  2 - Full square: four trees          Right click  - Stop orbit and sound',
     "  3 - Kahane's Cantor-set version      Scroll wheel - Zoom in and out",
     '  4 - Triangle Δ, nothing slid         Space        - Stop the sound',
-    '↑ ↓ - p: one bisection more or fewer   C - Cycle colour mode',
-    '← → - Scrub the growth stage           A - Cycle sound: orbit / chord / off',
-    '  G - Grow the tree from Σ2            D - Toggle audio dampening',
-    '  L - Level lines y = k/p              Q - Snap chord pitches to a pentatonic scale',
-    '  T - Outline of the original Δ        S - Save snapshot',
-    '  R - Reset view                       F - Fullscreen',
+    '  5 - Needle set: trees + Pál joins    N   - Turn the needle (sets 5–8)',
+    '  6 - Deltoid                          [ ] - Pál joins shorter / longer',
+    '  7 - Equilateral triangle             C   - Cycle colour mode',
+    '  8 - Disc                             A   - Cycle sound: orbit / chord / off',
+    '↑ ↓ - p: one bisection more or fewer   D   - Toggle audio dampening',
+    '← → - Scrub the growth stage           Q   - Snap chord pitches to a pentatonic scale',
+    '  G - Grow the tree from Σ2            S   - Save snapshot',
+    '  L - Level lines y = k/p              F   - Fullscreen',
+    '  T - Outline of the original Δ        R   - Reset view',
     '',
     '<span class="dim">What you see.  Σp is built as on pp. 701–705 of Besicovitch\'s article: start from the',
     'triangle Δ2, and p − 2 times bisect every triangle and expand both halves up to the next level.',
@@ -1641,6 +2092,14 @@ void main() {
     'how much the construction has piled up there. Outside the set the sound stops, like an orbit',
     'that escapes. Chord mode instead gives each needle its own note, pitch set by its direction,',
     'so a Kakeya set contains every pitch somewhere.</span>',
+    '',
+    '<span class="dim">Needle sets.  Kakeya asked for the smallest region in which a needle of length 1 can turn',
+    'all the way round. Set 5 is Besicovitch\'s answer (pp. 699–700): the four trees contain every',
+    'direction, and a Pál join takes the needle from each triangle to the next. It slides out along a',
+    'long line, turns a little about a far point, and slides back into the next triangle. Only that',
+    'little turn sweeps area, so the joins can be made as thin as you like, at the price of being long.',
+    'Sets 6–8 are the classical needle sets from p. 697: the disc (area π/4), the equilateral',
+    'triangle (1/√3, the smallest convex one) and the deltoid (π/8), long thought to be the smallest.</span>',
     '',
     '<span class="dim">Built on the design of HackerPoet\'s Fractal Sound Explorer (MIT licence).</span>'
   ].join('\n');
@@ -1684,6 +2143,7 @@ void main() {
     state.type = t;
     state.G = depth();
     anim = null;
+    stopTurning();
     stopSound();
     resetView();
     paramsChanged(true);
@@ -1702,6 +2162,14 @@ void main() {
     state.G = G;
     paramsChanged(false);
   }
+  function setReach(r) {
+    state.reach = Math.min(1000, Math.max(1, r));
+    syncPanel();
+    hudDirty = true;
+  }
+  function toggleTurning() {
+    if (turning) stopTurning(); else startTurning();
+  }
 
   function syncGrowSlider() {
     var lo = growMin(), hi = depth();
@@ -1710,11 +2178,18 @@ void main() {
   function syncPanel() {
     var t = info();
     $('type').value = String(state.type);
-    $('depthLabel').textContent = t.depthName === 'p' ? 'p' : 'depth m';
+    $('depthLabel').textContent = t.depthName === 'm' ? 'depth m' : 'p';
     $('depth').min = t.depthMin;
     $('depth').max = t.depthMax;
     $('depth').value = depth();
     $('depthOut').textContent = depth();
+    $('depthRow').classList.toggle('off', !!t.fixed);
+    $('growRow').classList.toggle('off', !!t.fixed);
+    $('needleRows').classList.toggle('hidden', !t.needle);
+    $('reachRow').classList.toggle('hidden', state.type !== K.NEEDLE);
+    $('reach').value = Math.round(1000 * Math.log10(state.reach) / 3);
+    $('reachOut').textContent = state.reach < 10 ? state.reach.toFixed(1) : Math.round(state.reach);
+    $('turnBtn').textContent = turning ? '■ Stop the needle' : '▶ Turn the needle';
     $('color').value = String(state.color);
     $('sound').value = state.sound;
     $('levels').checked = state.levels;
@@ -1743,6 +2218,9 @@ void main() {
   $('ghost').addEventListener('change', function (e) { state.ghost = e.target.checked; e.target.blur(); });
   $('damp').addEventListener('change', function (e) { setDamp(e.target.checked); e.target.blur(); });
   $('quant').addEventListener('change', function (e) { state.quant = e.target.checked; if (hear) sendSound(false); e.target.blur(); });
+  $('turnBtn').addEventListener('click', function (e) { toggleTurning(); e.target.blur(); });
+  $('reach').addEventListener('input', function (e) { setReach(Math.pow(10, 3 * (+e.target.value) / 1000)); });
+  $('reach').addEventListener('change', function (e) { e.target.blur(); });
 
   function setColor(c) {
     state.color = ((c % COLOR_COUNT) + COLOR_COUNT) % COLOR_COUNT;
@@ -1767,7 +2245,10 @@ void main() {
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== 'checkbox') return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     var k = e.key;
-    if (k >= '1' && k <= '4') setType(+k - 1);
+    if (k >= '1' && k <= '8') setType(+k - 1);
+    else if (k === 'n' || k === 'N') toggleTurning();
+    else if (k === '[') setReach(state.reach / 1.5);
+    else if (k === ']') setReach(state.reach * 1.5);
     else if (k === 'ArrowUp') setDepth(depth() + 1);
     else if (k === 'ArrowDown') setDepth(depth() - 1);
     else if (k === 'ArrowLeft' || k === 'ArrowRight') {
@@ -1785,7 +2266,7 @@ void main() {
     else if (k === 'r' || k === 'R') resetView();
     else if (k === 's' || k === 'S') snapshot();
     else if (k === 'f' || k === 'F' || k === 'F11') toggleFullscreen();
-    else if (k === ' ') stopSound();
+    else if (k === ' ') { stopTurning(); stopSound(); }
     else return;
     e.preventDefault();
   });
@@ -1832,6 +2313,7 @@ void main() {
     if (pointers.size > 2) return;
     if (e.button === 0 && !e.shiftKey) {
       drag = { mode: 'hear' };
+      stopTurning();
       ensureAudio();
       hearAt(e.clientX, e.clientY, true);
     } else {
@@ -1870,7 +2352,7 @@ void main() {
   });
   function endPointer(e) {
     pointers.delete(e.pointerId);
-    if (drag && drag.mode === 'pan' && drag.button === 2 && drag.moved < 4) stopSound();
+    if (drag && drag.mode === 'pan' && drag.button === 2 && drag.moved < 4) { stopTurning(); stopSound(); }
     if (pointers.size === 0) drag = null;
   }
   glCanvas.addEventListener('pointerup', endPointer);
@@ -1894,6 +2376,7 @@ void main() {
   function tick(now) {
     requestAnimationFrame(tick);
     stepGrowth(now);
+    stepTurning(now);
     if (stepCamera(now)) frame = 0;
     if (pendingHear) {
       hearAt(pendingHear[0], pendingHear[1], true);
@@ -1940,6 +2423,12 @@ void main() {
     },
     renderDebug: renderDebug,
     frames: function () { return frame; },
+    turn: function (on, hold) {
+      if (on) { startTurning(); if (turning && hold !== undefined) turning.hold = hold; } else stopTurning();
+      return !!turning;
+    },
+    turning: function () { return turning && turning.pos ? turning.pos : null; },
+    needlePath: function () { return needlePath(); },
     hearWorld: function (x, y) {
       var s = w2s(x, y);
       hearAt(s[0], s[1], true);
